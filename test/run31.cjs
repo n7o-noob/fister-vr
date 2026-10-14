@@ -18,7 +18,8 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
   await page.evaluate(() => { addEventListener('resize', () => game.renderer.setSize(innerWidth, innerHeight)); });
   await page.evaluate((c) => (0, eval)(c), SRC);
   await page.waitForFunction(() => fisterVR.state.renderers.size > 0 && fisterVR.buttonText === 'ENTER VR');
-  await page.evaluate(() => fisterVR.toggle());
+  // The game renderer has the session (as after a match ends); since 0.9.13 menus alone start menu-only VR (run32).
+  await page.evaluate(() => { fisterVR.config.handOff = 'any'; fisterVR.toggle(); });
   await page.waitForTimeout(2500);
   const img = await page.evaluate(() => __xrMock.layerImage());
   fs.writeFileSync(process.env.SHOT || path.join(__dirname, 'run31-layer.png'), Buffer.from(img.split(',')[1], 'base64'));

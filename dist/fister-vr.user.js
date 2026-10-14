@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.12
+// @version      0.9.13
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.12';
+  const VERSION = '0.9.13';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -139,6 +139,9 @@
     // VR. The page mirror shows the clip view full-screen under the game's own overlays instead of a black canvas.
     pageMirror: true,
     pageMirrorFps: 5,             // refresh rate of the mirror while no clip is being recorded (recording: every frame)
+    // When the headset moves from menu-only VR to the game's renderer: 'match' = once the game draws the scene your
+    // player is in, full-screen (menus with 3D previews stay menu-only); 'any' = the first big scene (before 0.9.13).
+    handOff: 'match',
   };
 
   const CONFIG_KEY = 'fister-vr-config';
@@ -238,6 +241,7 @@
     rafSeq: 0x40000000,
     gameAnimationLoop: new WeakMap(), // renderer -> game's own setAnimationLoop callback, if any
     xrTarget: null,
+    canvasSnaps: new WeakMap(),
     renderStats: { screen: 0, inset: 0, offscreen: 0, flat: 0, used: 0, insetSize: '', offscreenSize: '', flatCamera: '', since: 0 },
     renderRate: null,
     xrFrameNo: 0,
@@ -321,7 +325,7 @@
   // ---------------------------------------------------------------------------------------------------------
   let lateObject3DProto = null, lateOriginalOnBeforeRender = null;
   const lateGetter = function () {
-    try { if (this && this.isCamera === true && !hasMainRenderer()) armLateRendererProbe(this); } catch {}
+    try { if (this && this.isCamera === true && wantRendererProbe()) armLateRendererProbe(this); } catch {}
     return undefined;
   };
   Object.defineProperty(Object.prototype, 'isArrayCamera', { configurable: true, enumerable: false, get: lateGetter, set(value) {
@@ -339,13 +343,45 @@
     const w = d('innerWidth'), h = d('innerHeight');
     return () => ({ w: (w && w.get ? w.get.call(window) : window.innerWidth) || 1280, h: (h && h.get ? h.get.call(window) : window.innerHeight) || 720 });
   })();
-  function isMainRenderer(renderer) {
+  // Share of the screen a renderer's canvas covers, in CSS px (with the virtual screen on: of 1920x1080, or of the
+  // real window for a canvas that kept its pre-VR size).
+  function canvasCoverage(renderer) {
     const c = renderer && renderer.domElement;
-    if (!c || !c.isConnected) return false;
-    const win = winSize();
-    return (c.clientWidth * c.clientHeight) > 0.3 * win.w * win.h;
+    if (!c || !c.isConnected) return 0;
+    const win = winSize(), area = c.clientWidth * c.clientHeight;
+    // A game that doesn't follow the virtual screen's resize keeps a window-sized canvas: that counts as full too.
+    const ofWindow = area / (win.w * win.h);
+    return state.vscreen ? Math.max(area / (VSCREEN_W * VSCREEN_H), Math.min(ofWindow, 1)) : ofWindow;
+  }
+  function isMainRenderer(renderer) { return canvasCoverage(renderer) > 0.3; }
+  // The scene our own player is in, if any: proof that a match (or training) is on, not a menu.
+  function localPlayerScene() {
+    const player = localPlayer();
+    const head = player && player.head && player.head.isObject3D ? player.head : null;
+    if (!head || player.removed) return null;
+    const root = sceneRoot(head);
+    return root && root.isScene === true ? root : null;
+  }
+  // Give the headset to the game's renderer only when it draws the match full-screen. On menus Fister's 3D views are
+  // cosmetic/loadout previews (several renderers); handing them the session left the headset black (0.9.12 report).
+  function readyForGameView(renderer, scene) {
+    if (config.handOff === 'any') return isMainRenderer(renderer) && !!scene && sceneHasBuildingBlocks(scene);
+    const playerScene = localPlayerScene();
+    return !!playerScene && scene === playerScene && canvasCoverage(renderer) > 0.6;
   }
   function hasMainRenderer() { for (const r of state.renderers) if (isMainRenderer(r)) return true; return false; }
+  // Keep looking for renderers until one draws full-screen, and all through menu-only VR (the match's renderer may be
+  // new, or one that hasn't drawn since we attached; a big loadout preview used to stop the search).
+  // Read on every camera.isArrayCamera lookup (many per frame), so the answer is cached for half a second.
+  let probeWanted = true, probeCheckedAt = -Infinity;
+  function wantRendererProbe() {
+    const now = performance.now();
+    if (now - probeCheckedAt < 500) return probeWanted;
+    probeCheckedAt = now;
+    probeWanted = !!(state.standalone && !state.standalone.handedOff);
+    if (!probeWanted) { probeWanted = true; for (const r of state.renderers) if (canvasCoverage(r) > 0.6) { probeWanted = false; break; } }
+    return probeWanted;
+  }
 
   function armLateRendererProbe(camera) {
     if (lateObject3DProto) return;
@@ -418,7 +454,6 @@
   function captureRenderer(renderer) {
     if (state.renderers.has(renderer) || typeof renderer.render !== 'function' || !renderer.xr) return;
     state.renderers.add(renderer);
-    if (isMainRenderer(renderer)) removeLateCameraProbe();
 
     // Step 1 of the brief: renderer.xr.enabled = true directly after the WebGLRenderer is created.
     renderer.xr.enabled = true;
@@ -625,6 +660,29 @@
     if (state.cameraStats.size > 32) state.cameraStats.clear();
   }
 
+  // A WebGL canvas keeps no picture after its frame, so copy it right after the game draws (menu-only VR, for the
+  // panel). At most at the panel's frame rate, and only for canvases on screen.
+  function snapshotCanvas(renderer) {
+    const c = renderer.domElement;
+    if (!c || !c.isConnected || !c.width || !c.height) return;
+    const now = performance.now();
+    let snap = state.canvasSnaps.get(c);
+    const gap = 1000 / Math.max(1, Number(config.menu.maxFps) || 12);
+    if (snap && now - snap.at < gap) return;
+    const r = c.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    if (!snap) { const canvas = document.createElement('canvas'); snap = { canvas, ctx: canvas.getContext('2d'), at: 0, ok: false }; state.canvasSnaps.set(c, snap); }
+    if (!snap.ctx) return;
+    const k = Math.min(1, 1024 / Math.max(c.width, c.height));
+    const w = Math.max(1, Math.round(c.width * k)), h = Math.max(1, Math.round(c.height * k));
+    if (snap.canvas.width !== w || snap.canvas.height !== h) { snap.canvas.width = w; snap.canvas.height = h; }
+    snap.ctx.clearRect(0, 0, w, h);
+    snap.ctx.drawImage(c, 0, 0, w, h);
+    snap.at = now; snap.ok = true;
+    if (state.menu) state.menu.dirty = true;
+    if (state.standalone && state.standalone.menu) state.standalone.menu.dirty = true;
+  }
+
   function canvasArea(renderer) {
     const canvas = renderer.domElement;
     return canvas && canvas.isConnected ? (canvas.clientWidth * canvas.clientHeight) || 1 : 0;
@@ -650,15 +708,17 @@
   }
 
   function renderThroughVr(renderer, originalRender, scene, camera) {
-    if (state.standalone && !state.standalone.handedOff && isMainRenderer(renderer) && scene && scene.isScene
-        && camera && camera.isPerspectiveCamera && sceneHasBuildingBlocks(scene)) {
+    if (state.standalone && !state.standalone.handedOff && scene && scene.isScene
+        && camera && camera.isPerspectiveCamera && readyForGameView(renderer, scene)) {
       noteRender(renderer, scene, camera);
       handOffStandalone(renderer);
       return originalRender.call(renderer, scene, camera);
     }
     if (!state.presenting || renderer !== state.renderer || !renderer.xr.isPresenting) {
       noteRender(renderer, scene, camera);
-      return originalRender.call(renderer, scene, camera);
+      const result = originalRender.call(renderer, scene, camera);
+      if (state.standalone && !state.standalone.handedOff) safe('preview snapshot', () => snapshotCanvas(renderer));
+      return result;
     }
     const isSceneRender = scene && scene.isScene && camera && camera.isPerspectiveCamera;
     if (isSceneRender) {
@@ -2441,6 +2501,11 @@
       const r = el.getBoundingClientRect();
       const onScreen = r.right > S.x && r.bottom > S.y && r.left < S.x + S.w && r.top < S.y + S.h;
       const tag = el.tagName;
+      if (visible && onScreen && r.width > 0 && r.height > 0 && isGameCanvas(el)) {
+        // Menu-only VR: the game's 3D previews (loadout, cosmetics) are live canvases; draw their latest snapshot.
+        const snap = state.standalone && !state.standalone.handedOff ? state.canvasSnaps.get(el) : null;
+        if (snap && snap.ok) { ctx.globalAlpha = a; ctx.drawImage(snap.canvas, r.left * sx, r.top * sy, r.width * sx, r.height * sy); }
+      }
       if (visible && onScreen && r.width > 0 && r.height > 0 && el !== document.body && el !== document.documentElement && !isGameCanvas(el)) {
         // In the HUD, full-width bars / tall columns are layout containers: look inside them for the widgets.
         // In a match, full-screen containers (the gray page behind the game view) are see-through.
@@ -3564,12 +3629,17 @@
 
     async function onSessionStarted(session) {
       let { renderer, camera } = pickMain();
-      if (renderer && !isMainRenderer(renderer)) renderer = [...state.renderers].find(isMainRenderer) || null;
-      // Only go straight to the game view if the game is drawing a scene we can put the menu panel into.
-      if (renderer) {
-        const entry = camera && state.cameraStats.get(camera);
-        const scene = entry ? entry.scene : null;
-        if (!scene || !sceneHasBuildingBlocks(scene)) { log('Game scene not ready for VR objects yet; starting menu-only VR.'); renderer = null; }
+      // Straight to the game view only in a match: a renderer that last drew the scene our player is in, full-screen.
+      // Menus (main menu, loadout, store) use menu-only VR; it moves to the game when a match starts.
+      let entry = camera && state.cameraStats.get(camera);
+      if (!renderer || !entry || !readyForGameView(renderer, entry.scene)) {
+        const playerScene = localPlayerScene();
+        const hit = playerScene && [...state.cameraStats.entries()].find(([, e]) => e.scene === playerScene && readyForGameView(e.renderer, e.scene));
+        if (hit) { camera = hit[0]; entry = hit[1]; renderer = entry.renderer; }
+        else {
+          log('Not in a match (' + (playerScene ? 'player scene not drawn full-screen' : 'no local player') + ', ' + state.renderers.size + ' renderer(s)); starting menu-only VR.');
+          renderer = null;
+        }
       }
       session.addEventListener('end', onSessionEnded);
       button.textContent = 'EXIT VR';

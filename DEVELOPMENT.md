@@ -2,7 +2,7 @@
 
 Context for anyone (human or AI) continuing work on Fister VR. Current version: see `@version` in `src/fister-vr.js`.
 
-## Start here (state as of v0.9.12)
+## Start here (state as of v0.9.13)
 
 - **Working with the user:**
   - They test on a real Quest 2 and send videos, screenshots and **COPY LOG** reports. COPY LOG is the button next to VR INFO; the "Menu panel" and "Aim" lines plus the log are the key diagnostics.
@@ -15,7 +15,7 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
   5. Tell the user to re-copy the bookmarklet once the setup page footer shows the new version.
 - **Tests:** `cd test; NODE_PATH=/opt/node-tools/node_modules PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node runN.cjs`.
   - They need `three.module.js` and `three.core.js` in `test/site/` (gitignored; copy them from an npm `three` build).
-  - The full suite is run6–20 and run23–31. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
+  - The full suite is run6–20 and run23–32. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
   - Don't overwrite existing test numbers; another chat also adds tests. Use the next free number and port.
 - **Reference code:** the user's `fister-community-server.zip` (server + `dist/shared/gameplay`, no client/HUD code) was used for the shoulder-aim origin and the `isEmoting` field. It isn't in the repo; ask the user to re-upload it if needed.
 - **Open / unverified on the real game:**
@@ -25,7 +25,7 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
   - Held items (`ITEM_KEYS`, v0.8.0+): the user reported many still missing or wrong at v0.7.9. Not re-checked since.
   - The three.js-built panel never rendered on the Quest; the cause is unknown. Direct WebGL drawing (`drawOverlay`) is used instead.
   - Clips / flat page (v0.9.11): does the page mirror show the view on the Quest, and which clip method does COPY LOG's "Clips:" line report (canvas, or readback async/sync)? If it says "game canvas BLACK" too, the scene itself renders black in the clip camera, not just the copy.
-  - Main menu in VR (v0.9.12): fixed in the stand-in (run31) for a menu drawn through an offscreen buffer with an avatar-preview inset. Unconfirmed on the Quest: the COPY LOG "Renders/s:" line shows what the real menu does. Still open: loading into a map flashes the skybox instead of the loading room (the same line, taken while loading, should explain it).
+  - Main menu in VR (v0.9.13): menus now start menu-only VR (dark room, floor grid, page panel with the 3D previews) and hand off when a match draws your player's scene full-screen (run32). Unconfirmed on the Quest. If the hand-off never comes, set `fisterVR.config.handOff = 'any'` for the old behaviour and send a log. Still open: the skybox flashing while loading into a map (loading should now stay menu-only until your player exists).
 
 ## Target and constraints
 
@@ -130,6 +130,19 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Arms and body: armMode 'hand', swapArms true, handOffset {forward 0.15, inward 0.06, up 0}, hideBody true, eyeOffset.up 0.1.
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
+
+## v0.9.13: menus start menu-only VR; hand-off only into a match
+
+- Quest COPY LOG on 0.9.12 (ENTER VR on the loadout screen): headset black, "Renders/s" all 0, "Menu panel: not built yet", **8 renderers**, "main game view" captured only 75 s after VR started. The flat page showed the loadout's 3D preview (its own renderer) still drawing.
+  - The session went to a renderer that didn't draw while presenting. On menus, Fister's 3D views are cosmetic/loadout previews with their own renderers.
+  - With the virtual screen on, `isMainRenderer` compared canvas CSS size with the real (smaller) window, so a preview looked "main".
+  - Capturing such a "main" renderer also removed the late camera probe for good, so the match's renderer (created before attach, or not drawing yet) was never found. Reproduced in run32.
+- **Session start** (`onSessionStarted`): straight to the game renderer only if `readyForGameView` holds for the picked camera's renderer/scene, or for any camera whose scene is the local player's (`localPlayerScene`: root of `localPlayer().head`). Otherwise menu-only VR, logged as "Not in a match (...)".
+- **Hand-off** (`renderThroughVr`, first branch): `readyForGameView(renderer, scene)`: the scene is the local player's and the canvas covers > 60% (`canvasCoverage`: of 1920x1080 with the virtual screen, or of the real window for a canvas that kept its pre-VR size). `config.handOff: 'any'` restores the old rule (big canvas + `sceneHasBuildingBlocks`).
+- **Renderer search**: the `isArrayCamera` probe stays installed. `wantRendererProbe()` (cached 500 ms, since it is read many times per frame) arms it during menu-only VR, and otherwise until some renderer covers > 60%.
+- **Previews on the panel** (menu-only VR): after each render by a non-presenting renderer, `snapshotCanvas` copies its canvas (at most the panel's fps, max 1024 px) into `state.canvasSnaps`, and `paintDom` draws the snapshot where the canvas sits. Renderer canvases used to be skipped entirely.
+- run31 now sets `handOff: 'any'` (it tests the game-renderer theater path, as after a match ends).
+- Not verified on the Quest.
 
 ## v0.9.12: main menu black in VR (preview inset, offscreen menu view)
 

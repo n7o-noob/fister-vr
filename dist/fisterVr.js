@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.4
+// @version      0.9.5
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.4';
+  const VERSION = '0.9.5';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -2805,7 +2805,7 @@
         if (!bridge) { log('Clip button: FisterQoL is not loaded.'); toast('Saving clips needs FisterQoL: use the "Fister VR + FisterQoL" bookmark.'); pulse(hand, 0.3, 40); return; }
         const bound = typeof bridge.clipInput === 'function' ? bridge.clipInput() : null;
         state.clipHeld = bound;
-        if (!bound) { log('Clip button: no Save clip key found in the game controls.'); toast('No Save clip key found in the game\'s controls. Bind one in Settings > Controls.'); pulse(hand, 0.3, 40); return; }
+        if (!bound) { log('Clip button: no Save clip key found in the game controls.'); toast('No Save clip key found. Pick it in Settings > QoL > VR > Save clip key.'); pulse(hand, 0.3, 40); return; }
         let recording = null;
         try { const v = localStorage.getItem('fister-clip-recording'); recording = v === null ? null : v !== 'false'; } catch {}
         const name = bound.key ? bound.key.replace(/^Key|^Digit/, '') : 'mouse ' + (bound.mouse + 1);
@@ -3343,7 +3343,9 @@
           const m = Array.isArray(n.material) ? n.material[0] : n.material;
           return (n.name || '(unnamed)') + ' ' + (m && m.type) + ' side=' + (m && m.side) + ' blend=' + (m && m.blending) + (m && m.color ? ' #' + m.color.getHexString() : '');
         }) : [],
-        firstPerson: state.fp ? state.fp.label : null, gameScene: {}, localPlayer: {}, storage: {} };
+        firstPerson: state.fp ? state.fp.label : null,
+        clip: (() => { try { const b = root.__fisterQolVrBridge; return b && typeof b.clipInfo === 'function' ? b.clipInfo() : 'FisterQoL not loaded'; } catch (e) { return String(e); } })(),
+        gameScene: {}, localPlayer: {}, storage: {} };
       if (gs) for (const key of Object.keys(gs)) { try { out.gameScene[key] = describe(gs[key]); } catch {} }
       const player = localPlayer();
       if (player) for (const key of Object.keys(player)) { try { out.localPlayer[key] = describe(player[key]); } catch {} }

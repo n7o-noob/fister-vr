@@ -106,6 +106,18 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.5: Save clip key setting
+
+- Quest report on 0.9.4: the clip view worked ("recording the headset view at 1376x720", clip recording on), but
+  "Clip button: no Save clip key found in the game controls": no control in `__fisterNative.BR` has "clip" in its name.
+- QoL > VR > **Save clip key**: Automatic (search the game's controls for clip/replay/highlight), a list of common keys,
+  or **Set by pressing the key** (captures `KeyboardEvent.code`, or mouse buttons 4/5). Saved as `clipKey` in
+  `fister-qol-vr-v1`; `clipInput()` uses it first.
+- The clip hook now also receives the game's recorder object (`recordingCanvas(canvas, mode, profile, recorder)`, both
+  patch sites in the template). `clipInfo()` reports the control names, the recorder's functions and fields, and the
+  native Clips settings text; `fisterVR.dump()` (VR info > Copy all, DETAILS) includes it as `clip`. Next step: if the
+  key stays unknown, call the recorder's save function directly once its name is known from a report.
+
 ## v0.9.4: FisterQoL bookmarklet under fister.fun's script policy
 
 - Quest log on 0.9.3: "frame loaded WITHOUT FisterQoL" three times and never "FisterQoL started in the frame", so the

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.8.1
+// @version      0.8.2
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.8.1';
+  const VERSION = '0.8.2';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -76,7 +76,9 @@
     // Where the game's aim ray starts: 'camera' (its third-person camera's crosshair, Fister's default) or 'body'.
     aimOrigin: 'camera',
     // In-match HUD panel (health, style, scoreboard): distance and width in metres, and how far below eye level.
-    hud: { distance: 1.6, width: 2.0, drop: 0 },
+    // pull: how far widgets are moved in toward the centre of view (1 = where the page has them, 0 = all in the middle);
+    // grow: how much bigger they're drawn.
+    hud: { distance: 1.5, width: 2.0, drop: 0.05, pull: 0.5, grow: 1.4 },
     aimGain: 0.6,                 // fraction of the remaining angle corrected per frame
     aimDeadzoneDeg: 0.4,
     aimPitch: true,
@@ -128,6 +130,7 @@
     merged.boxColors = { ...DEFAULT_CONFIG.boxColors, ...(saved.boxColors || {}), ...(baked.boxColors || {}) };
     merged.menu = { ...DEFAULT_CONFIG.menu, ...(saved.menu || {}), ...(baked.menu || {}) };
     merged.eyeOffset = { ...DEFAULT_CONFIG.eyeOffset, ...(saved.eyeOffset || {}), ...(baked.eyeOffset || {}) };
+    merged.hud = { ...DEFAULT_CONFIG.hud, ...(saved.hud || {}), ...(baked.hud || {}) };
     merged.handOffset = { ...DEFAULT_CONFIG.handOffset, ...(saved.handOffset || {}), ...(baked.handOffset || {}) };
     if (merged.armOverride === false) merged.armMode = 'off';
     return merged;
@@ -1760,8 +1763,16 @@
   // see-through, without the full-screen containers behind the game canvas (they painted a big gray slab).
   const hudMode = () => !!(state.gameplay && !state.ragdoll && !state.pointerLockReleased);
   function paintDom(menu) {
-    const { canvas, ctx } = menu;
     const hud = hudMode();
+    // HUD: paint the page to a scratch canvas, then copy each on-screen widget (health box, scoreboard, popups) into
+    // the panel, pulled in toward the centre of view and drawn bigger. Page edges sit too far out to see in a headset.
+    let canvas = menu.canvas, ctx = menu.ctx;
+    const widgets = [];
+    if (hud) {
+      if (!menu.full) { menu.full = document.createElement('canvas'); menu.fullCtx = menu.full.getContext('2d'); }
+      if (menu.full.width !== canvas.width || menu.full.height !== canvas.height) { menu.full.width = canvas.width; menu.full.height = canvas.height; }
+      canvas = menu.full; ctx = menu.fullCtx;
+    }
     const W = canvas.width, H = canvas.height, sx = W / innerWidth, sy = H / innerHeight;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
@@ -1866,7 +1877,7 @@
       }
     };
 
-    const walk = (el, alpha) => {
+    const walk = (el, alpha, inWidget) => {
       if (--budget < 0 || isOurs(el)) return;
       const cs = getComputedStyle(el);
       if (cs.display === 'none') return;
@@ -1879,7 +1890,10 @@
       const onScreen = r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight;
       const tag = el.tagName;
       if (visible && onScreen && r.width > 0 && r.height > 0 && el !== document.body && el !== document.documentElement && !isGameCanvas(el)) {
-        if (!(hud && big(r))) paintBox(r, cs, a);
+        // In the HUD, full-width bars / tall columns are layout containers: look inside them for the widgets.
+        const container = hud && !inWidget && (big(r) || r.width > 0.45 * innerWidth || r.height > 0.6 * innerHeight);
+        if (!(hud && (big(r) || container))) paintBox(r, cs, a);
+        if (hud && !inWidget && !container && r.width >= 3 && r.height >= 3) { widgets.push({ x: r.left, y: r.top, w: r.width, h: r.height }); inWidget = true; }
         ctx.globalAlpha = a;
         if (tag === 'IMG' && !menu.noImages && el.complete && el.naturalWidth) {
           const src = el.currentSrc || el.src;
@@ -1914,20 +1928,45 @@
       const clip = cs.overflow !== 'visible' && cs.overflowY !== 'visible' && r.width > 0 && r.height > 0;
       if (clip) { ctx.save(); ctx.beginPath(); ctx.rect(r.left * sx, r.top * sy, r.width * sx, r.height * sy); ctx.clip(); }
       for (let child = el.firstChild; child; child = child.nextSibling) {
-        if (child.nodeType === 1) walk(child, a);
-        else if (child.nodeType === 3 && visible && onScreen) paintText(child, cs, a);
+        if (child.nodeType === 1) walk(child, a, inWidget);
+        else if (child.nodeType === 3 && visible && onScreen) {
+          paintText(child, cs, a);
+          if (hud && !inWidget && child.nodeValue && child.nodeValue.trim()) {
+            range.selectNodeContents(child);
+            const tr = range.getBoundingClientRect();
+            if (tr.width > 0 && tr.height > 0) widgets.push({ x: tr.left - 2, y: tr.top - 2, w: tr.width + 4, h: tr.height + 4 });
+          }
+        }
       }
       if (clip) ctx.restore();
     };
-    if (document.body) walk(document.body, 1);
+    if (document.body) walk(document.body, 1, false);
     ctx.globalAlpha = 1;
     // A cross-origin image would make the texture unusable. Checking costs a GPU readback, so only do it the first
     // time a new image/canvas is drawn.
     if (unverified.length) {
       try { ctx.getImageData(0, 0, 1, 1); for (const k of unverified) verified.add(k); }
       catch {
-        if (!menu.noImages) { menu.noImages = true; warn('Menu panel: a cross-origin image blocked it; redrawing without images.'); return paintDom(menu); }
+        if (!menu.noImages) { menu.noImages = true; menu.full = null; warn('Menu panel: a cross-origin image blocked it; redrawing without images.'); return paintDom(menu); }
       }
+    }
+    menu.hudMap = null;
+    if (hud) {
+      const out = menu.ctx, W = menu.canvas.width, H = menu.canvas.height;
+      out.setTransform(1, 0, 0, 1, 0, 0);
+      out.globalAlpha = 1;
+      out.clearRect(0, 0, W, H);
+      const pull = Math.max(0, Math.min(1, Number(config.hud.pull) || 0.5)), grow = Math.max(0.5, Math.min(3, Number(config.hud.grow) || 1.4));
+      const cx0 = innerWidth / 2, cy0 = innerHeight / 2, map = [];
+      for (const r of widgets) {
+        const w = r.w * grow, h = r.h * grow;
+        let x = cx0 + (r.x + r.w / 2 - cx0) * pull - w / 2, y = cy0 + (r.y + r.h / 2 - cy0) * pull - h / 2;
+        x = Math.max(0, Math.min(innerWidth - w, x)); y = Math.max(0, Math.min(innerHeight - h, y));
+        try { out.drawImage(canvas, r.x * sx, r.y * sy, r.w * sx, r.h * sy, x * sx, y * sy, w * sx, h * sy); } catch {}
+        map.push({ src: r, dst: { x, y, w, h } });
+      }
+      menu.hudMap = map;
+      menu.hudWidgets = widgets.length;
     }
     menu.nodes = nodes;
     menu.texture.needsUpdate = true;
@@ -2003,8 +2042,12 @@
         const t = -o.z / dz;
         const x = o.x + (p2.x - o.x) * t, y = o.y + (p2.y - o.y) * t;
         if (t > 0 && Math.abs(x) <= 0.5 && Math.abs(y) <= 0.5) {
-          const cx = (x + 0.5) * innerWidth, cy = (0.5 - y) * innerHeight;
-          const el = document.elementFromPoint(cx, cy);
+          let cx = (x + 0.5) * innerWidth, cy = (0.5 - y) * innerHeight;
+          if (menu.hudMap) { // the HUD moved widgets: map the point back to where the widget really is on the page
+            const m = menu.hudMap.find((e) => cx >= e.dst.x && cx <= e.dst.x + e.dst.w && cy >= e.dst.y && cy <= e.dst.y + e.dst.h);
+            if (m) { cx = m.src.x + (cx - m.dst.x) * m.src.w / m.dst.w; cy = m.src.y + (cy - m.dst.y) * m.src.h / m.dst.h; } else { cx = -1; cy = -1; }
+          }
+          const el = cx < 0 ? null : document.elementFromPoint(cx, cy);
           if (hitInteractive(el)) {
             hit = { element: el, x: cx, y: cy };
             const world = panel.localToWorld(tmp.v2.set(x, y, 0.002));
@@ -2823,7 +2866,7 @@
       'Players: ' + (state.gameScene ? 'game scene' : state.lateScene ? 'map probe' : 'not found') + (state.reprobe ? ' (re-searching)' : '')
         + ' · local: ' + (player ? 'yes' : 'no'),
       'Aim: ' + config.aimMode + ' · learned ' + (state.aim.ratioX * 1000).toFixed(2) + ' mrad/px' + (state.aim.stuck > 30 ? ' · NOT RESPONDING' : ''),
-      'Menu panel: ' + (state.menu ? 'shown · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
+      'Menu panel: ' + (state.menu ? 'shown' + (state.menu.hudMap ? ' as HUD (' + state.menu.hudWidgets + ' widgets)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
         + ' · laser: ' + (state.uiHit ? 'on ' + state.uiHit.element.tagName.toLowerCase() : 'off') + ' · mouse captured: ' + (document.pointerLockElement ? 'yes' : 'no'),
       'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
         + ' · game locked ' + describeEl(state.lockTarget) + ' (' + (state.lockRequests || 0) + 'x) · keys held ' + ([...state.keysDown].join(' ') || 'none'),

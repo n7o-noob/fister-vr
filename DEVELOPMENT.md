@@ -106,6 +106,15 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.8.2
+
+- **In-match HUD layout.** Mapping the whole page onto one panel put Fister's HUD (health, style and souls at the top left, scoreboard at the top right) about 30° out, where the Quest's lenses blur. It looked like there was no HUD.
+  - In HUD mode, `paintDom` now paints into a scratch canvas (`menu.full`) and collects "widgets": the first non-container box or text on each branch.
+  - Boxes that are more than half the screen, more than 45% wide or more than 60% tall count as layout containers. Their backgrounds are skipped and the walk looks inside them.
+  - Each widget is copied into the panel pulled toward the centre (`hud.pull`) and enlarged (`hud.grow`).
+  - `menu.hudMap` maps laser hits back to the real page position.
+- The status line shows "as HUD (N widgets)". If N is 0 on the real game, the widget detection is the problem.
+
 ## v0.8.1
 
 - **Aim origin is the game camera** (`aimOrigin: 'camera'`). Fister's aim follows its third-person camera's crosshair, about 5.5 m behind the head; the green aim line runs from the body to where that crosshair hits.

@@ -49,12 +49,16 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
   res.hud = await page.evaluate(async () => {
     const bg = document.createElement('div'); bg.style.cssText = 'position:fixed;inset:0;background:#808080;z-index:-1'; document.body.prepend(bg);
     const hp = document.createElement('div'); hp.textContent = 'HEALTH'; hp.style.cssText = 'position:fixed;left:10px;top:10px;width:160px;height:20px;background:#000080;color:#fff'; document.body.appendChild(hp);
+    const bar = document.createElement('div'); bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;height:60px;display:flex;justify-content:space-between'; bar.innerHTML = '<span style="background:#800;color:#fff;padding:4px">AMMO 3</span><span style="background:#080;color:#fff;padding:4px">+17 STYLE</span>'; document.body.appendChild(bar);
     const m = fisterVR.state.menu; m.dirty = true; m.lastDraw = 0;
     await new Promise(r => setTimeout(r, 400));
     const ctx = m.canvas.getContext('2d'), sx = m.canvas.width / innerWidth;
     const px = (x, y) => [...ctx.getImageData(Math.round(x * sx), Math.round(y * sx), 1, 1).data];
-    return { hudMode: fisterVR.state.gameplay && !fisterVR.state.pointerLockReleased, centerPixel: px(innerWidth / 2, innerHeight / 2), healthPixel: px(50, 20), laserOnHud: !!fisterVR.state.uiHit };
+    return { summary: fisterVR._internals.liveSummary().find(l => l.startsWith('Menu panel')), map: fisterVR.state.menu.hudMap.map(e => [e.src, e.dst].map(r => [r.x, r.y, r.w, r.h].map(Math.round).join(','))), hudMode: fisterVR.state.gameplay && !fisterVR.state.pointerLockReleased, centerPixel: px(innerWidth / 2, innerHeight / 2), healthPixel: px(50, 20), laserOnHud: !!fisterVR.state.uiHit };
   });
+  await page.evaluate(() => __xrMock.setRay('right', [0.25, 1.0, -0.3], [0, -0.3, -1]));
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: process.env.SHOT || '/tmp/hud.png' });
   console.log(JSON.stringify(res, null, 1)); console.log('errors', errors);
   await browser.close(); server.close();
 });

@@ -106,6 +106,17 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.7.8 – v0.7.9
+
+- Hands are always mirrored side to side so the claws face outward (the game's model was showing them inside). There's no option for this.
+- Held items: `holdItems()` follows the player fields FisterQoL also uses (`scytheMesh`, `pistonMesh`, `carMesh`, `tankMesh`, `laserbeamOrb`, `firstPersonWeaponRoot`).
+  - Each item keeps its offset from the arm *as the game saw it* that frame, applied to your VR arm. It inherits the arm's size and mirroring.
+  - `armSizeSeen` corrects the item size when the game doesn't reset the arm's scale.
+  - Items more than 0.6 m from the game's hand, and the first-person weapon, are put directly at the hand, facing where the controller points.
+  - Objects outside the scene (e.g. on the game camera) are moved into the scene while in VR and put back afterwards.
+- `gamePose()` / `notePoseWritten()`: if the game didn't set an object's pose again since we wrote it, its last pose is restored before we work from it. This is checked per part (position, rotation, scale).
+- Item names and how the game attaches items are unverified on the real game.
+
 ## Status / open items (as of v0.7.7)
 
 - v0.7.7 fixes, found from a Quest video:

@@ -23,6 +23,11 @@ class Player {
     this.outline = new THREE.Mesh(new THREE.BoxGeometry(.6, 1.9, .5), new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide }));
     this.outline.position.y = 0.95;
     this.mesh.add(this.head, this.torso, this.leftLeg, this.rightLeg, this.outline); scene.add(this.mesh);
+    if (location.search.includes('items')) {
+      // Power-up items like Fister's: separate objects the game places from its arm animation each frame.
+      this.scytheMesh = new THREE.Mesh(new THREE.BoxGeometry(.05, .05, .7), new THREE.MeshStandardMaterial({ color: 0xcccccc })); scene.add(this.scytheMesh);
+      this.firstPersonWeaponRoot = new THREE.Group(); this.firstPersonWeaponRoot.add(new THREE.Mesh(new THREE.BoxGeometry(.1, .1, .3), new THREE.MeshBasicMaterial({ color: 0xff8800 })));
+    }
   }
   isLocalPlayer() { return this.id === 'me'; }
 }
@@ -83,6 +88,15 @@ class Game {
     else if (!this.glitchNext) me.head.position.set(0, 1.6, 0);
     if (this.thirdPerson) this.camera.position.add(new THREE.Vector3(Math.sin(this.yaw) * 8, 2, Math.cos(this.yaw) * 8));
     this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+    if (me.scytheMesh) {
+      // Arm swing animation; the scythe is put at the (game) hand end every frame, blade along the arm's forward.
+      if (location.search.includes('animall')) { me.leftArm.position.set(-.25, .3, 0); me.leftArm.scale.set(1, 1, 1); }
+      me.leftArm.rotation.x = Math.sin(this.frames * 0.05) * 0.6;
+      me.leftArm.updateMatrixWorld(true);
+      const hand = me.leftArm.localToWorld(new THREE.Vector3(0, -0.6, 0));
+      me.scytheMesh.position.copy(hand); me.leftArm.getWorldQuaternion(me.scytheMesh.quaternion);
+      if (!me.firstPersonWeaponRoot.parent) { this.camera.add(me.firstPersonWeaponRoot); me.firstPersonWeaponRoot.position.set(0.3, -0.3, -0.5); }
+    }
     if (this.glitchNext) { this.glitchNext = false; me.head.position.set(NaN, NaN, NaN); me.head.updateMatrixWorld(); }
     if (this.mode === 'menu') this.renderer.render(this.menuScene, this.menuCamera);
     else this.renderer.render(this.scene, this.camera);

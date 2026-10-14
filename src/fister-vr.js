@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.7.8
+// @version      0.7.9
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.7.8';
+  const VERSION = '0.7.9';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -60,8 +60,8 @@
     handOffset: { forward: 0.15, inward: 0.06, up: 0 },
     // Hide your own torso and legs (and clothing/cosmetics on them) in the headset. Head, arms and held items stay.
     hideBody: true,
-    // Mirror each hand side to side so its claws/spikes face outward (they faced your other hand). Visual, only you.
-    mirrorHands: true,
+    // Power-up items (scythe, piston, car, tank, laser orb, first-person weapon) follow your VR hands.
+    holdItems: true,
     armOverride: true,            // legacy switch; false behaves like armMode 'off'
     armAxis: 'auto',              // arm mesh's long axis toward the hand: 'auto' | '-y' | 'y' | '-z' | 'z' | '-x' | 'x'
     armRotationOffsetDeg: [0, 0, 0],
@@ -696,8 +696,8 @@
     safe('view rig', () => updateRig(scene, camera, inBody));
     if (!state.menu && config.menu.mode !== 'off' && (state.menuRetry = (state.menuRetry || 0) + 1) % 30 === 1) safe('menu setup', setupMenu);
     safe('menu', updateMenu);   // before aim, so aim pauses the same frame the laser lands on a menu
-    if (inBody) { safe('hand aim', steerAim); safe('arms', overrideArms); safe('hide body', () => hideBody(localPlayer())); }
-    else { state.aim.lastYaw = null; safe('hide body', restoreBody); safe('arm size', restoreArmScale); }
+    if (inBody) { safe('hand aim', steerAim); safe('arms', overrideArms); safe('held items', () => holdItems(localPlayer(), scene)); safe('hide body', () => hideBody(localPlayer())); }
+    else { state.aim.lastYaw = null; safe('hide body', restoreBody); safe('held items', restoreItems); safe('arm size', restoreArmScale); }
     safe('outlines', () => hideOutlines(scene));
     safe('controller boxes', updateBoxes);
     const work = performance.now() - workStart;
@@ -1206,6 +1206,17 @@
         ? (config.swapArms ? (entry.handedness === 'left' ? 'right' : 'left') : entry.handedness) : null;
       const arm = hand === 'left' ? player.leftArm : hand === 'right' ? player.rightArm : null;
       if (!arm || !arm.isObject3D || !arm.parent) continue;
+      // The arm as the game saw it when it placed held items this frame (held items are measured against this).
+      // If the game doesn't reset the arm's size, it placed items against our resized arm: remember by how much
+      // (sizeSeen), so items still end up scaled with your arm.
+      const origs = state.armOrig || (state.armOrig = new Map());
+      if (!origs.has(arm)) origs.set(arm, new C.Matrix4());
+      arm.updateWorldMatrix(true, false);
+      origs.get(arm).copy(arm.matrixWorld);
+      const preSize = arm.scale.length();
+      gamePose(arm); // start from the game's pose (it may not re-animate the arm every frame)
+      const sizes = state.armSizeSeen || (state.armSizeSeen = new Map());
+      sizes.set(arm, arm.scale.length() > 1e-9 ? preSize / arm.scale.length() : 1);
       const info = armInfo(arm);
       // Size: remember the game's own scale once, then apply ours on top (restored when you leave your body).
       const scaled = state.armScaled || (state.armScaled = new Map());
@@ -1241,7 +1252,7 @@
       t.qw.multiply(t.qo);
       // Mirror across the plane that splits the hand into inside/outside: flip the arm's local axis that points
       // most sideways (perpendicular to the arm and to world up).
-      if (config.mirrorHands && config.armMode === 'hand') {
+      if (config.armMode === 'hand') { // hands always mirrored: the claws belong on the outside
         t.dir.copy(info.axis).applyQuaternion(t.qw);           // arm direction, world
         t.right.set(0, 1, 0).cross(t.dir);                      // sideways, world
         if (t.right.lengthSq() > 1e-8) {
@@ -1261,10 +1272,130 @@
       arm.getWorldPosition(t.pos).add(t.pin).sub(t.now);
       arm.position.copy(arm.parent.worldToLocal(t.pos));
       arm.updateMatrixWorld(true);
+      notePoseWritten(arm);
     }
   }
 
+  // --- the game's own pose vs ours --------------------------------------------------------------------------------
+  // We overwrite some objects' local pose every frame. If the game doesn't set them again next frame, what we find
+  // is our own output, so put the game's last pose back first instead of building on ours.
+  function gamePose(obj) {
+    const poses = state.poses || (state.poses = new Map());
+    let rec = poses.get(obj);
+    if (!rec) { rec = { game: null, written: null }; poses.set(obj, rec); }
+    // Per part: the game may set the position every frame but never the scale, say.
+    if (!rec.game) rec.game = { p: obj.position.clone(), q: obj.quaternion.clone(), s: obj.scale.clone() };
+    else {
+      const w = rec.written;
+      for (const [k, prop] of [['p', 'position'], ['q', 'quaternion'], ['s', 'scale']]) {
+        if (w && obj[prop].equals(w[k])) obj[prop].copy(rec.game[k]);
+        else rec.game[k].copy(obj[prop]);
+      }
+    }
+    rec.written = null;
+    return rec;
+  }
+  function notePoseWritten(obj) {
+    const rec = state.poses && state.poses.get(obj);
+    if (rec) rec.written = { p: obj.position.clone(), q: obj.quaternion.clone(), s: obj.scale.clone() };
+  }
+  function restoreGamePose(obj) {
+    const rec = state.poses && state.poses.get(obj);
+    if (rec && rec.game) { obj.position.copy(rec.game.p); obj.quaternion.copy(rec.game.q); obj.scale.copy(rec.game.s); }
+    if (state.poses) state.poses.delete(obj);
+  }
+
+  // --- held items ---------------------------------------------------------------------------------------------
+  // Power-up items are separate objects the game places from its own arm animation (or, for the first-person
+  // weapon, from its camera), so they floated where the animation had them, or weren't drawn at all. Each frame we
+  // take where the game put the item relative to its animated arm and apply that to the arm you're moving instead:
+  // same grip, and it scales with the arm. Items far from the game's hand (camera-held) are put straight in the hand.
+  const ITEM_KEYS = ['scytheMesh', 'pistonMesh', 'carMesh', 'tankMesh', 'laserbeamOrb', 'firstPersonWeaponRoot'];
+  function armFor(player, hand) {
+    const gameHand = config.swapArms ? (hand === 'left' ? 'right' : 'left') : hand;
+    return gameHand === 'left' ? player.leftArm : player.rightArm;
+  }
+  function holdItems(player, scene) {
+    if (!config.holdItems || config.armMode !== 'hand' || !player || !state.armOrig) { restoreItems(); return; }
+    const C = state.classes;
+    const t = state.itemTmp || (state.itemTmp = { m: new C.Matrix4(), m2: new C.Matrix4(), m3: new C.Matrix4(), p: new C.Vector3(),
+      q: new C.Quaternion(), s: new C.Vector3(), h: new C.Vector3(), h2: new C.Vector3() });
+    const items = state.heldItems || (state.heldItems = new Map());
+    const seen = new Set();
+    for (const key of ITEM_KEYS) {
+      const item = player[key];
+      if (!item || !item.isObject3D || item === player.leftArm || item === player.rightArm || seen.has(item)) continue;
+      seen.add(item);
+      let rec = items.get(item);
+      if (!rec) { rec = { key, home: item.parent, reparented: false, arm: null }; items.set(item, rec); }
+      if (!rec.reparented) rec.home = item.parent;
+      gamePose(item);
+      if (!item.visible) continue;
+      // Where the game means the item to be (in its own parent's space, even if we moved it into the scene).
+      const home = rec.home;
+      t.m.compose(item.position, item.quaternion, item.scale);
+      if (home) { home.updateWorldMatrix(true, false); t.m.premultiply(home.matrixWorld); }
+      // Which hand: the first-person weapon goes in your aim hand; others in whichever game hand is nearest.
+      if (!rec.arm || !rec.arm.parent) {
+        if (key === 'firstPersonWeaponRoot') rec.arm = armFor(player, config.aimHand);
+        else {
+          t.p.setFromMatrixPosition(t.m);
+          let best = null, bestD = Infinity;
+          for (const arm of [player.leftArm, player.rightArm]) {
+            const orig = arm && state.armOrig.get(arm);
+            if (!orig) continue;
+            const d = t.h.copy(armInfo(arm).hand).applyMatrix4(orig).distanceTo(t.p);
+            if (d < bestD) { bestD = d; best = arm; }
+          }
+          rec.arm = best;
+        }
+        if (rec.arm) log('Holding ' + key + ' in your ' + (rec.arm === armFor(player, 'right') ? 'right' : 'left') + ' hand.');
+      }
+      const arm = rec.arm, orig = arm && state.armOrig.get(arm);
+      if (!orig) continue;
+      const info = armInfo(arm);
+      t.p.setFromMatrixPosition(t.m);
+      const offHand = t.h.copy(info.hand).applyMatrix4(orig).distanceTo(t.p);
+      const avatarScale = state.rig && state.rig.scale.x || 1;
+      if (key === 'firstPersonWeaponRoot' || offHand > 0.6 * avatarScale) {
+        // Not attached to the game's arm: put it at your hand, facing where the controller points.
+        const entry = state.controllers.find((c) => c.source && armFor(player, c.handedness) === arm);
+        const k = Math.max(0.1, Math.min(2, Number(config.armScale) || 1));
+        t.m.decompose(t.h2, t.q, t.s);
+        t.s.multiplyScalar(k);
+        t.h.copy(info.hand).applyMatrix4(arm.matrixWorld);
+        if (entry) entry.group.getWorldQuaternion(t.q); else arm.getWorldQuaternion(t.q);
+        t.m3.compose(t.h, t.q, t.s);
+      } else {
+        // Same grip as the game's animation, carried over to your arm (inherits its size and mirroring).
+        t.m2.copy(orig).invert().multiply(t.m);
+        t.m3.copy(arm.matrixWorld).multiply(t.m2);
+        const seen = state.armSizeSeen && state.armSizeSeen.get(arm) || 1;
+        if (Math.abs(seen - 1) > 1e-4) t.m3.scale(t.s.setScalar(seen));
+      }
+      // Objects outside the scene (e.g. a weapon on the game's camera) are never drawn in the headset: move them in.
+      let top = item; while (top.parent) top = top.parent;
+      if (top !== scene) { scene.add(item); rec.reparented = true; }
+      item.parent.updateWorldMatrix(true, false);
+      t.m2.copy(item.parent.matrixWorld).invert().multiply(t.m3);
+      t.m2.decompose(item.position, item.quaternion, item.scale);
+      item.updateMatrixWorld(true);
+      notePoseWritten(item);
+    }
+    for (const [item, rec] of items) if (!seen.has(item)) { putItemBack(item, rec); items.delete(item); }
+  }
+  function putItemBack(item, rec) {
+    if (rec.reparented) { if (rec.home) rec.home.add(item); else if (item.parent) item.parent.remove(item); }
+    restoreGamePose(item);
+  }
+  function restoreItems() {
+    if (!state.heldItems || !state.heldItems.size) return;
+    for (const [item, rec] of state.heldItems) putItemBack(item, rec);
+    state.heldItems.clear();
+  }
+
   function restoreArmScale() {
+    if (state.armOrig) { for (const arm of state.armOrig.keys()) restoreGamePose(arm); state.armOrig.clear(); }
     if (!state.armScaled || !state.armScaled.size) return;
     for (const [arm, scale] of state.armScaled) arm.scale.copy(scale);
     state.armScaled.clear();
@@ -2264,7 +2395,7 @@
     const sources = [...session.inputSources].filter((src) => src.targetRayMode === 'tracked-pointer' || src.gamepad);
     // three.js only tracks controllers it saw arrive ('inputsourceschange'). After the menu-only view hands the session
     // over, they had already arrived, so three never moves them: no hands, no aim. Replay the arrival for three.
-    if (session.__fisterVrReplayed !== session && sources.length && state.controllers.some((c) => !c.source)) {
+    if (session.__fisterVrReplayed !== session && sources.length && typeof session.dispatchEvent === 'function' && state.controllers.some((c) => !c.source)) {
       session.__fisterVrReplayed = session;
       try {
         const event = new Event('inputsourceschange');
@@ -2398,6 +2529,7 @@
     restoreShake();
     restoreOutlines();
     restoreBody();
+    restoreItems();
     restoreArmScale();
     if (state.rig && state.rig.parent) state.rig.parent.remove(state.rig);
     renderer.xr.setAnimationLoop(null);

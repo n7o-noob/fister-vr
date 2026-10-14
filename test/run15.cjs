@@ -21,7 +21,7 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
   res.onEmptyMenu = await page.evaluate(() => ({ menuOnly: !!fisterVR.state.standalone && !fisterVR.state.standalone.handedOff, panelDraws: fisterVR.state.standalone && fisterVR.state.standalone.menu.draws }));
   // Click Settings with the laser: the press arrives as a WebXR select event.
   await page.evaluate(() => {
-    const b = document.getElementById('openSettings').getBoundingClientRect(), w = 1.6, h = w * (innerHeight / innerWidth);
+    const b = document.getElementById('openSettings').getBoundingClientRect(), w = 1.6 * (fisterVR.config.uiScale || 1), h = w * (innerHeight / innerWidth);
     const x = ((b.left + b.width / 2) / innerWidth - 0.5) * w, y = (0.5 - (b.top + b.height / 2) / innerHeight) * h;
     const target = [x, 1.6 - 0.15 + y, -1.4], o = [0.2, 1.2, -0.3];
     __xrMock.setRay('right', o, target.map((v, i) => v - o[i]));

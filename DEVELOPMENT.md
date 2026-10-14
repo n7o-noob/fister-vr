@@ -106,6 +106,16 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.7: VR UI size
+
+- User: "all UIs are condensed, way too small".
+- `config.uiScale` (default 1.4; 1 = the old size) multiplies the menu panel width (game renderer and menu-only VR) and the HUD panel width.
+  - In the HUD, `hud.pull` is divided by `uiScale`, so widgets get bigger but stay at the same angles in view.
+- Setup page: "VR menu and HUD size": Small 1 / Medium 1.4 / Large 1.8 / Extra large 2.3.
+- In VR: while the laser is on a menu, the right stick's left/right resizes the panels instead of turning (about 0.5% per frame), between 0.5 and 3. The size is saved after 0.4 s, with a toast.
+  - A bookmarklet that bakes `uiScale` re-applies its value on the next tap, unless the page's own options say otherwise.
+- run13/run15 laser targets now use `1.6 * uiScale` for the panel width.
+
 ## v0.9.6: in-round HUD on Quest (projection layers), shoulder aim
 
 - **Why 0.8.3's direct drawing couldn't work on the Quest.** three.js uses an `XRProjectionLayer` (WebXR Layers) whenever `XRWebGLBinding.prototype.createProjectionLayer` exists, which it does in the Quest Browser. `drawOverlay` only knew `session.renderState.baseLayer` (an XRWebGLLayer), so it returned early and the mod fell back to the three.js panel mesh, which never shows on the Quest.

@@ -244,6 +244,16 @@ ul.notes li { max-width: 68ch; }
           <small>How far away the panel floats, and how wide it is.</small>
         </div>
         <div class="field">
+          <label for="uiScale">VR menu and HUD size</label>
+          <select id="uiScale">
+            <option value="1">Small (old size)</option>
+            <option value="1.4" selected>Medium</option>
+            <option value="1.8">Large</option>
+            <option value="2.3">Extra large</option>
+          </select>
+          <small>Size of the menus and in-match HUD in the headset. Fine-tune in VR: point at a menu and push the right stick left or right.</small>
+        </div>
+        <div class="field">
           <label for="hideOutlines">Outline glow</label>
           <select id="hideOutlines">
             <option value="world" selected>Hide on power-ups and objects</option>
@@ -340,7 +350,7 @@ ul.notes li { max-width: 68ch; }
 const LAYER_SOURCE = __LAYER_SOURCE__;
 const QOL_PAYLOAD = __QOL_PAYLOAD__;
 __QOL_LOADER__
-const ids = ['bundle', 'applyEach', 'aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody'];
+const ids = ['bundle', 'applyEach', 'aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody', 'uiScale'];
 const codeEl = document.getElementById('code');
 const sizeEl = document.getElementById('size');
 const statusEl = document.getElementById('status');
@@ -361,6 +371,7 @@ function overrides() {
     eyeOffset: { up: Number(v('eyeUp')), forward: 0 },
     armScale: Number(v('armScale')),
     boxScale: Number(v('boxScale')),
+    uiScale: Number(v('uiScale')),
     menu: (() => { const [d, w] = v('menuDistance').split(',').map(Number); return { mode: v('menuMode'), distance: d, width: w }; })(),
     hideOutlines: v('hideOutlines'),
     swapArms: true, // Fister names its arms backwards; always corrected

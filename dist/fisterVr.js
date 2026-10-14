@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.10
+// @version      0.9.11
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.10';
+  const VERSION = '0.9.11';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -131,6 +131,14 @@
     clipHeight: 720,              // pixel height of that view (the width follows your screen's shape)
     clipFov: 90,                  // vertical field of view, degrees
     clipSmoothing: 0.6,           // 0 = raw head motion, 0.9 = very steady
+    // 'auto': copy the view from the game canvas, and switch to reading it back from the GPU if those copies come out
+    // black (seen on the Quest). 'canvas' or 'readback' forces one.
+    clipMethod: 'auto',
+    clipReadbackHeight: 480,      // pixel height when reading back (each frame stalls the GPU a little; smaller is cheaper)
+    // The flat page (what the Quest Browser shows behind the headset, and what clips are built from) stops updating in
+    // VR. The page mirror shows the clip view full-screen under the game's own overlays instead of a black canvas.
+    pageMirror: true,
+    pageMirrorFps: 5,             // refresh rate of the mirror while no clip is being recorded (recording: every frame)
   };
 
   const CONFIG_KEY = 'fister-vr-config';
@@ -808,13 +816,21 @@
   // first-person view from the headset into a corner of the canvas, copy it to a 2D canvas, and give that to the
   // recorder through FisterQoL's clip hook (fisterVR.clipFrame).
   // ---------------------------------------------------------------------------------------------------------
+  const clipRecording = () => performance.now() - (state.clipCaptureAt || 0) < 1500;
   function clipWanted() {
     if (config.clipView === 'off' || !state.presenting) return false;
-    return performance.now() - (state.clipCaptureAt || 0) < 1500;
+    // Recording: draw a new view for each frame the recorder asked for (not more often than it takes them).
+    if (clipRecording()) return !state.clip || !state.clip.frames || state.clipCaptureAt >= state.clip.frameAt;
+    // Not recording: refresh the page mirror at a low rate.
+    if (config.pageMirror === false) return false;
+    const fps = Math.min(30, Math.max(1, Number(config.pageMirrorFps) || 5));
+    return !state.clip || !state.clip.frames || performance.now() - (state.clip.frameAt || 0) >= 1000 / fps;
   }
   function clipSize(renderer) {
     const canvas = renderer.domElement;
-    const cw = canvas.clientWidth || innerWidth || 1280, ch = canvas.clientHeight || innerHeight || 720;
+    // With the virtual screen on, the page is a 1920x1080 screen (the game canvas keeps its pre-VR size: three.js
+    // ignores setSize while presenting), so clips are 16:9 and line up with the overlays.
+    const cw = state.vscreen ? VSCREEN_W : canvas.clientWidth || winSize().w, ch = state.vscreen ? VSCREEN_H : canvas.clientHeight || winSize().h;
     const aspect = Math.min(3, Math.max(0.4, cw / ch));
     let h = Math.round(Math.min(Math.max(240, Number(config.clipHeight) || 720), 2160));
     let w = Math.round(h * aspect);
@@ -833,7 +849,7 @@
       clip = state.clip = { canvas, ctx: canvas.getContext('2d', { alpha: false }), cam: null, pos: new C.Vector3(), quat: new C.Quaternion(),
         scl: new C.Vector3(), primed: false, frames: 0, ms: 0, frameAt: 0 };
     }
-    if (!clip.ctx) return;
+    if (!clip.ctx || clip.pending) return; // a read-back is still on its way
     if (!clip.cam) { clip.cam = state.view.clone(false); clip.cam.name = 'fister-vr-clip-view'; }
     const cam = clip.cam;
     // Head pose in world space: three.js copied it onto our view camera during the headset render.
@@ -850,25 +866,38 @@
     cam.aspect = w / h;
     const k = Math.max(0.05, clip.scl.x || 1);
     cam.near = state.view.near * k; cam.far = state.view.far * k;
+    cam.layers.mask = state.view.layers.mask;
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld(true);
+    if (!clip.method) clip.method = config.clipMethod === 'readback' ? 'readback' : 'canvas';
     const t0 = performance.now();
     const previousTarget = renderer.getRenderTarget();
     if (!state.vector4Ctor) { try { const vp = renderer.getViewport({ copy(v) { state.vector4Ctor = v.constructor; return this; } }); } catch {} }
     const previousViewport = state.vector4Ctor ? renderer.getViewport(new state.vector4Ctor()) : null;
     const canvas = renderer.domElement;
+    const checkDue = t0 - (clip.checkAt || 0) > 1000;
     state.clipRendering = true;
     renderer.xr.enabled = false;
+    let drew = true;
     try {
-      renderer.setRenderTarget(null);
-      const ratio = renderer.getPixelRatio() || 1;
-      renderer.setViewport(0, 0, w / ratio, h / ratio);
-      originalRender.call(renderer, scene, cam);
-      // Copy now, in the same task as the draw (the WebGL canvas keeps no frames). GL's origin is bottom-left.
-      if (clip.canvas.width !== w || clip.canvas.height !== h) { clip.canvas.width = w; clip.canvas.height = h; }
-      clip.ctx.drawImage(canvas, 0, canvas.height - h, w, h, 0, 0, w, h);
-      clip.frames++;
-      clip.frameAt = performance.now();
+      if (clip.method === 'readback') {
+        try { drew = clipReadback(renderer, originalRender, scene, cam, w, h); }
+        catch (error) {
+          clip.method = 'canvas'; clip.readbackFailed = true;
+          record('error', ['Clip view: reading the view back failed; copying from the game canvas again:', error]);
+          throw error;
+        }
+      } else {
+        renderer.setRenderTarget(null);
+        const ratio = renderer.getPixelRatio() || 1;
+        renderer.setViewport(0, 0, w / ratio, h / ratio);
+        originalRender.call(renderer, scene, cam);
+        if (checkDue) clip.fbMax = sampleFramebuffer(renderer.getContext(), w, h);
+        // Copy now, in the same task as the draw (the WebGL canvas keeps no frames). GL's origin is bottom-left.
+        if (clip.canvas.width !== w || clip.canvas.height !== h) { clip.canvas.width = w; clip.canvas.height = h; }
+        clip.ctx.drawImage(canvas, 0, canvas.height - h, w, h, 0, 0, w, h);
+      }
+      if (drew) clipFrameDone(clip);
     } finally {
       renderer.xr.enabled = true;
       state.clipRendering = false;
@@ -877,7 +906,141 @@
     }
     const ms = performance.now() - t0;
     clip.ms = clip.ms ? clip.ms * 0.9 + ms * 0.1 : ms;
-    if (clip.frames === 1) log('Clip view: recording the headset view at ' + w + 'x' + h + '.');
+    if (drew) clipFrameShown(clip, renderer, checkDue);
+  }
+  function clipFrameDone(clip) {
+    clip.frames++;
+    clip.frameAt = performance.now();
+  }
+  function clipFrameShown(clip, renderer, checkDue) {
+    if (clip.frames === 1) log('Clip view: drawing the headset view at ' + clip.canvas.width + 'x' + clip.canvas.height + ' (' + clip.method + ').');
+    if (checkDue) checkClipFrame(clip);
+    safe('page mirror', () => updateMirror(renderer));
+  }
+  // Is a picture there at all? The brightest channel over a few spots (0 = all black).
+  function sampleFramebuffer(gl, w, h) {
+    if (!gl || !gl.readPixels) return null;
+    const px = new Uint8Array(4);
+    let max = 0;
+    for (let i = 1; i <= 3; i++) for (let j = 1; j <= 3; j++) {
+      gl.readPixels(Math.floor(w * i / 4), Math.floor(h * j / 4), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      max = Math.max(max, px[0], px[1], px[2]);
+    }
+    return max;
+  }
+  function sampleCanvas(source) {
+    if (!state.clipProbe) { const c = document.createElement('canvas'); c.width = 16; c.height = 9; state.clipProbe = { c, ctx: c.getContext('2d', { willReadFrequently: true }) }; }
+    const p = state.clipProbe;
+    if (!p.ctx) return null;
+    p.ctx.fillStyle = '#000'; p.ctx.fillRect(0, 0, 16, 9);
+    p.ctx.drawImage(source, 0, 0, 16, 9);
+    const d = p.ctx.getImageData(0, 0, 16, 9).data;
+    let max = 0;
+    for (let i = 0; i < d.length; i += 4) max = Math.max(max, d[i], d[i + 1], d[i + 2]);
+    return max;
+  }
+  // On the Quest the copies from the game canvas came out black while presenting. Once a second, check the picture;
+  // after 3 black checks in a row (a real scene is never pure black) switch to rendering into our own target and
+  // reading the pixels back, which doesn't depend on the canvas.
+  function checkClipFrame(clip) {
+    clip.checkAt = performance.now();
+    clip.imgMax = sampleCanvas(clip.canvas);
+    if (clip.method !== 'canvas' || config.clipMethod === 'canvas' || clip.readbackFailed || clip.imgMax === null) return;
+    clip.blackChecks = clip.imgMax < 6 ? (clip.blackChecks || 0) + 1 : 0;
+    if (clip.blackChecks < 3) return;
+    clip.method = 'readback';
+    const fb = clip.fbMax == null ? 'unknown' : clip.fbMax < 6 ? 'black too' : 'has a picture';
+    warn('Clip view: copies of the game canvas come out black (game canvas itself: ' + fb + '); reading the view back from the GPU instead.');
+  }
+  function clipReadback(renderer, originalRender, scene, cam, w, h) {
+    const clip = state.clip;
+    const Target = state.xrTarget && state.xrTarget.constructor;
+    if (!Target || typeof renderer.readRenderTargetPixels !== 'function') throw new Error('no render target class');
+    // Reading pixels back stalls the GPU, so keep it small.
+    const s = Math.min(1, Math.min(1080, Math.max(240, Number(config.clipReadbackHeight) || 480)) / h);
+    const rw = Math.max(2, Math.floor(w * s / 2) * 2), rh = Math.max(2, Math.floor(h * s / 2) * 2);
+    if (!clip.rt || clip.rt.width !== rw || clip.rt.height !== rh) {
+      if (clip.rt) { try { clip.rt.dispose(); } catch {} }
+      clip.rt = new Target(rw, rh, { depthBuffer: true });
+      // Like three's own XR target: encode to the screen's colour space instead of linear (the picture would be dark).
+      clip.rt.isXRRenderTarget = true;
+      if (clip.rt.texture && 'colorSpace' in clip.rt.texture) clip.rt.texture.colorSpace = renderer.outputColorSpace;
+      clip.px = new Uint8Array(rw * rh * 4);
+      clip.img = clip.ctx.createImageData(rw, rh);
+    }
+    renderer.setRenderTarget(clip.rt);
+    originalRender.call(renderer, scene, cam);
+    const blit = () => {
+      const row = rw * 4, out = clip.img.data, px = clip.px;
+      for (let y = 0; y < rh; y++) out.set(px.subarray((rh - 1 - y) * row, (rh - y) * row), y * row);
+      for (let i = 3; i < out.length; i += 4) out[i] = 255;
+      if (clip.canvas.width !== rw || clip.canvas.height !== rh) { clip.canvas.width = rw; clip.canvas.height = rh; }
+      clip.ctx.putImageData(clip.img, 0, 0);
+    };
+    // Newer three.js reads back without stalling (pixel buffer + fence, ready a frame or two later).
+    if (typeof renderer.readRenderTargetPixelsAsync === 'function' && !clip.asyncFailed) {
+      clip.pending = true;
+      clip.readMode = 'async';
+      const px = clip.px, img = clip.img;
+      Promise.resolve(renderer.readRenderTargetPixelsAsync(clip.rt, 0, 0, rw, rh, px)).then(() => {
+        clip.pending = false;
+        if (clip.px !== px || clip.img !== img || !state.presenting) return; // resized or VR ended meanwhile
+        blit();
+        clipFrameDone(clip);
+        clipFrameShown(clip, renderer, performance.now() - (clip.checkAt || 0) > 1000);
+      }, (error) => {
+        clip.pending = false;
+        clip.asyncFailed = true;
+        record('warn', ['Clip view: reading back without stalling failed; reading back directly:', error]);
+      });
+      return false;
+    }
+    clip.readMode = 'sync';
+    renderer.readRenderTargetPixels(clip.rt, 0, 0, rw, rh, clip.px);
+    blit();
+    return true;
+  }
+  // The page mirror is the clip view's canvas itself, placed right after the game canvas (so the game's overlays stay
+  // on top) and stretched over the whole (virtual) screen.
+  function updateMirror(renderer) {
+    const clip = state.clip;
+    if (config.pageMirror === false || !state.presenting || !clip || !clip.frames) { removeMirror(); return; }
+    const m = clip.canvas, src = renderer.domElement;
+    if (!m.id) {
+      m.id = 'fister-vr-mirror';
+      m.setAttribute('aria-hidden', 'true');
+    }
+    const W = state.vscreen ? VSCREEN_W : winSize().w, H = state.vscreen ? VSCREEN_H : winSize().h;
+    const key = W + 'x' + H;
+    if (m.isConnected && m.previousElementSibling === src && m.dataset.size === key) return;
+    const st = m.style;
+    st.cssText = 'position:fixed;left:0;top:0;margin:0;padding:0;border:0;width:' + W + 'px;height:' + H + 'px;object-fit:cover;pointer-events:none;display:block;';
+    let z = 'auto';
+    try { z = getComputedStyle(src).zIndex; } catch {}
+    if (/^-?\d+$/.test(z)) st.zIndex = z;
+    m.dataset.size = key;
+    if (src && src.isConnected && src.parentNode) src.after(m);
+    else if (document.body) document.body.prepend(m);
+    if (!state.mirrorLogged) { state.mirrorLogged = true; log('Page mirror on: the flat page shows the headset view (' + key + ').'); }
+  }
+  function removeMirror() {
+    const m = state.clip && state.clip.canvas;
+    if (m && m.isConnected) m.remove();
+  }
+  function clipReport() {
+    const clip = state.clip;
+    if (config.clipView === 'off') return 'clip view off';
+    if (!clip || !clip.frames) return 'no view drawn yet' + (state.presenting ? '' : ' (not in VR)');
+    const lvl = (v) => (v == null ? '?' : v < 6 ? 'BLACK' : 'ok (' + v + ')');
+    return clip.canvas.width + 'x' + clip.canvas.height + ' via ' + clip.method + (clip.method === 'readback' && clip.readMode ? ' (' + clip.readMode + ')' : '') + (clip.readbackFailed ? ' (read-back failed)' : '')
+      + ' · ' + clip.frames + ' frames · ' + (clip.ms || 0).toFixed(1) + ' ms each · recording ' + (clipRecording() ? 'yes' : 'no')
+      + ' · picture ' + lvl(clip.imgMax) + ' · game canvas ' + lvl(clip.fbMax) + ' · page mirror ' + (clip.canvas.isConnected ? 'on' : 'off');
+  }
+  // Where the clip picture sits on the page: FisterQoL maps its overlays into clips with this.
+  function clipRect() {
+    if (!state.presenting || !state.clip || !state.clip.frames) return null;
+    const S = screenRect();
+    return { x: S.x, y: S.y, width: S.w, height: S.h, left: S.x, top: S.y };
   }
   // Called by FisterQoL's clip hook for every frame the game's recorder takes. Returns the canvas with the headset view
   // (or null outside VR / with the clip view off, so the normal game canvas is used).
@@ -1781,7 +1944,7 @@
   }
 
   // --- page helpers ------------------------------------------------------------------------------------------
-  const isOurs = (el) => !!(el && el.closest && el.closest('#fister-vr-bar, #fister-vr-status, #fister-steam-overlay-heartbeat'));
+  const isOurs = (el) => !!(el && el.closest && el.closest('#fister-vr-bar, #fister-vr-status, #fister-vr-mirror, #fister-steam-overlay-heartbeat'));
   const isGameCanvas = (el) => !!(el && ((state.renderer && el === state.renderer.domElement) || [...state.renderers].some((r) => r.domElement === el)));
 
   // --- VR menus: the game's 2D interface on a panel in front of your body ------------------------------------------
@@ -3234,7 +3397,8 @@
     restoreItems();
     restoreArmScale();
     if (state.rig && state.rig.parent) state.rig.parent.remove(state.rig);
-    if (state.clip) { state.clip.primed = false; state.clip.frames = 0; }
+    safe('page mirror', removeMirror);
+    if (state.clip) { state.clip.primed = false; state.clip.frames = 0; state.clip.blackChecks = 0; }
     if (root.__fisterQolVrBridge && root.__fisterQolVrBridge.sessionChanged) { try { root.__fisterQolVrBridge.sessionChanged(false); } catch {} }
     renderer.xr.setAnimationLoop(null);
     renderer.__fisterVrOriginalLoop.call(renderer, state.gameAnimationLoop.get(renderer) || null);
@@ -3382,6 +3546,7 @@
       'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
         + ' · game locked ' + describeEl(state.lockTarget) + ' (' + (state.lockRequests || 0) + 'x) · keys held ' + ([...state.keysDown].join(' ') || 'none'),
       'Frame: ' + (state.frameMs ? state.frameMs.toFixed(1) + ' ms' : '-') + ' · mod work ' + (state.modMs || 0).toFixed(1) + ' ms · repeated frames ' + (state.repeats || 0) + ' · blocked late clears ' + (state.blockedClears || 0) + ' · position glitches ' + (state.glitches || 0),
+      'Clips: ' + clipReport(),
       'Feature errors: ' + errors,
     ];
   }
@@ -3540,7 +3705,8 @@
     copyLog: (button) => copyReport(button || null, document.getElementById('fister-vr-info')),
     applyButtonVisibility,
     clipFrame,
-    clipStats: () => state.clip ? { frames: state.clip.frames, ms: +state.clip.ms.toFixed(2), width: state.clip.canvas.width, height: state.clip.canvas.height, recording: clipWanted() } : { frames: 0, recording: clipWanted() },
+    clipRect,
+    clipStats: () => state.clip ? { frames: state.clip.frames, ms: +state.clip.ms.toFixed(2), width: state.clip.canvas.width, height: state.clip.canvas.height, recording: clipRecording(), method: state.clip.method, picture: state.clip.imgMax, gameCanvas: state.clip.fbMax, mirror: state.clip.canvas.isConnected } : { frames: 0, recording: clipRecording() },
     config,
     state,
     saveConfig,
@@ -3580,7 +3746,7 @@
       console.log(text);
       return out;
     },
-    _internals: { isEmoting, screenRect, applyVirtualScreen, captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
+    _internals: { isEmoting, liveSummary, screenRect, applyVirtualScreen, captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
       lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, startStandalone, handOffStandalone, isMainRenderer, sceneHasBuildingBlocks, runDueTimers, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
   });
 

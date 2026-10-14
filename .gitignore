@@ -7,3 +7,5 @@ test/clip-frame.png
 test/setup-qol.png
 test/reload-stopped.png
 test/r*.json
+test/run30-page.png
+test/run30-clip.png

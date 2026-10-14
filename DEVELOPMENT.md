@@ -2,7 +2,7 @@
 
 Context for anyone (human or AI) continuing work on Fister VR. Current version: see `@version` in `src/fister-vr.js`.
 
-## Start here (state as of v0.9.10)
+## Start here (state as of v0.9.11)
 
 - **Working with the user:**
   - They test on a real Quest 2 and send videos, screenshots and **COPY LOG** reports. COPY LOG is the button next to VR INFO; the "Menu panel" and "Aim" lines plus the log are the key diagnostics.
@@ -15,7 +15,7 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
   5. Tell the user to re-copy the bookmarklet once the setup page footer shows the new version.
 - **Tests:** `cd test; NODE_PATH=/opt/node-tools/node_modules PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node runN.cjs`.
   - They need `three.module.js` and `three.core.js` in `test/site/` (gitignored; copy them from an npm `three` build).
-  - The full suite is run6–20 and run23–29. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
+  - The full suite is run6–20 and run23–30. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
   - Don't overwrite existing test numbers; another chat also adds tests. Use the next free number and port.
 - **Reference code:** the user's `fister-community-server.zip` (server + `dist/shared/gameplay`, no client/HUD code) was used for the shoulder-aim origin and the `isEmoting` field. It isn't in the repo; ask the user to re-upload it if needed.
 - **Open / unverified on the real game:**
@@ -24,6 +24,8 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
   - Aim accuracy after the v0.9.10 fixes (jumps, air kicks, held items).
   - Held items (`ITEM_KEYS`, v0.8.0+): the user reported many still missing or wrong at v0.7.9. Not re-checked since.
   - The three.js-built panel never rendered on the Quest; the cause is unknown. Direct WebGL drawing (`drawOverlay`) is used instead.
+  - Clips / flat page (v0.9.11): does the page mirror show the view on the Quest, and which clip method does COPY LOG's "Clips:" line report (canvas, or readback async/sync)? If it says "game canvas BLACK" too, the scene itself renders black in the clip camera, not just the copy.
+  - Still open from the v0.9.9 overhaul (user report, not yet looked at): the main menu in menu-only VR is a black area, and loading into a map flashes the skybox instead of the loading room. Suspects: `applyVirtualScreen`'s spoofed size and `resize` events vs. hand-off (`handOffStandalone`, `isMainRenderer`) and theater/gameplay switching. Quick test: `fisterVR.config.virtualScreen = false`.
 
 ## Target and constraints
 
@@ -128,6 +130,21 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Arms and body: armMode 'hand', swapArms true, handOffset {forward 0.15, inward 0.06, up 0}, hideBody true, eyeOffset.up 0.1.
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
+
+## v0.9.11: clips and the flat page in VR (page mirror, read-back)
+
+- User report (Quest COPY LOG + screenshot of the flat page behind the headset): the page was black except the HTML overlays. Reproduced with the layers mock (`run30`):
+  - While presenting with a projection layer, three.js draws only into the layer, so the game canvas never updates.
+  - Three.js also ignores `setSize` while presenting, so with the virtual screen on, the canvas keeps its pre-VR CSS size (the real window) in the top-left of the 1920x1080 body, with black around it.
+  - The clip view rendered into a corner of that canvas. On the Quest the result was black (either the render or the `drawImage` copy; unknown, see the "Clips:" line).
+- **Page mirror** (`config.pageMirror`, default on; `pageMirrorFps` 5): the clip view's own 2D canvas (`#fister-vr-mirror`) is placed right after the game canvas (so the game's overlays stay above), `position:fixed` over the whole virtual screen (or the window), `object-fit: cover`, `pointer-events: none`, the canvas's numeric z-index. It is in `isOurs`, so the panel painter skips it. Removed at session end.
+  - `clipWanted()`: while recording, a new view for each frame the recorder asked for (`clipCaptureAt >= frameAt`); otherwise the mirror rate. `clipView: 'off'` turns both off.
+- **Clip frames are 16:9** with the virtual screen on (`clipSize`), and `fisterVR.clipRect()` returns the virtual screen's page rect. FisterQoL's `capture()` maps overlays into clips with it (`fisterVrQol.clipRect()`), not with the game canvas's (wrong, top-left) rect.
+- **Black-frame check** (`checkClipFrame`, once a second): the clip canvas is sampled at 16x9, and in canvas mode 9 pixels of the default framebuffer are read right after the render (`sampleFramebuffer`). After 3 black checks in a row (`clipMethod: 'auto'`) it switches to **read-back** (`clipReadback`): render into our own render target (the XR target's constructor, `isXRRenderTarget = true` + `texture.colorSpace = outputColorSpace` so the bytes are display-encoded), read it back, flip into the clip canvas.
+  - `readRenderTargetPixelsAsync` (pixel buffer + fence, no stall) when the game's three.js has it; one read in flight, frames skipped meanwhile. Otherwise `readRenderTargetPixels` (stalls; in swiftshader 9 fps vs 52 async).
+  - Size: `clipReadbackHeight` (480). `clipMethod: 'canvas' | 'readback'` forces a method.
+- COPY LOG: new **"Clips:"** line: size, method (and async/sync), frames, ms each, recording, picture (brightest channel of the clip canvas, BLACK under 6), game canvas (same, from the framebuffer), page mirror on/off. `clipStats()` has the same fields.
+- Not verified on the Quest: all of it. Also noted in the user's report: the panel paint costs 25.9 ms per draw (178 draws) at 21 fps.
 
 ## v0.9.10: emotes, X = emote wheel, aim fixes
 

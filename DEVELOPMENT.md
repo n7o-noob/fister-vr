@@ -106,6 +106,26 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.10: emotes, X = emote wheel, aim fixes
+
+- **Emotes use the game's third-person camera**, like ragdolls.
+  - `isEmoting(player)` checks: `isEmoting`/`emoting` (the server networks `isEmoting`); the same on `state`/`serverState`/`snapshot`; `actionEmoteState`; `emoteCameraAnchorLocked`; `wormEmotePose`/`twerkEmotePose.active`; or `currentAnimationState` matching emote/dance/twerk/worm/taunt.
+  - It must be seen for 3 frames to enter, and drops 300 ms after the last sighting.
+  - `state.ragdoll` (third-person view) = ragdolled or emoting.
+- **Left X = `'emote'`** (was Space).
+  - It holds `config.emoteKey` (default `KeyE`) until a menu click (`uiPress` release + 60 ms), X again, or 15 s.
+  - While the wheel is open, `hudMode()` is false, so the laser can click anything on it.
+  - Saved configs whose `left.x` is Space are migrated, unless the bookmarklet bakes `left.x`.
+- **`Document.prototype.exitPointerLock`** while presenting sets `pointerLockReleased` and fires `pointerlockchange`, as the browser would. Games free the mouse this way for wheels and menus.
+- **Aim fixes** (straight down / way off with items and air kicks):
+  - The floor for the hand ray is the lowest body height over the last 2.5 s, not the current height. Mid-jump, the "floor" used to sit right under the hand.
+  - Ray hits within 0.8 m of the hand are ignored. Boxes containing the hand are ignored.
+  - All players' held items (`ITEM_KEYS`) are skipped by the raycast. Huge but flat boxes (floor slabs) are now included.
+  - The shoulder origin is the mesh's world position + world up, not the rotated mesh's local up, which flipped during air kicks.
+  - Steering and learning pause while `airKickPoseActive`, `acrobaticFlipVisualRemaining > 0`, `finisherRenderActive`, `emoteCameraAnchorLocked` or `replayFacingActive`. The status line says "(paused: air kick/flip)".
+  - The learned mouse ratio flips sign only after 12 contrary samples (was 4).
+- Not verified on the real game: the emote key (E), how Fister's wheel picks (click vs. mouse direction), and which emote fields it sets.
+
 ## v0.9.9: 1920x1080 virtual screen, transparency; size options removed
 
 - User: still crowded. They asked to remove the width/height/size options, make the UI elements smaller and correctly placed on a 1920x1080 "fake screen", and add a transparency setting (setup page and FisterQoL).

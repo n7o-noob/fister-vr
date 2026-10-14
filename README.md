@@ -50,7 +50,7 @@ Tap the bookmark again after each page reload.
 | Left / Right | Grip | Right mouse button |
 | Left | Stick | W A S D |
 | Left | Stick click | Recenter |
-| Left | X | Space |
+| Left | X | Emote wheel: holds E until you pick an emote with the laser (press X again to close) |
 | Left | Y | Escape (pause menu) |
 | Right | Stick left/right | Turn |
 | Right | A (hold) | V (voice chat) |

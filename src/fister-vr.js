@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.9
+// @version      0.9.10
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.9';
+  const VERSION = '0.9.10';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -108,11 +108,12 @@
       'left.squeeze': { mouse: 2 },
       'right.a': { key: 'KeyV' },   // voice chat (hold to talk)
       'right.b': 'refocus',      // wakes game input if it stops responding
-      'left.x': { key: 'Space' },
+      'left.x': 'emote',          // holds E (the emote wheel) until you pick an emote with the laser
       'left.y': { key: 'Escape' },
       'left.thumbstick': 'recenter',
       'right.thumbstick': 'clip', // save a clip, using the game's own clip key (FisterQoL build)
     },
+    emoteKey: 'KeyE',             // the game's emote wheel key ('emote' button action holds it)
     moveStick: 'left',            // stick that sends WASD
     moveThreshold: 0.45,
     turnStick: 'right',           // stick that sends mouse X movement (turning)
@@ -141,6 +142,9 @@
     const merged = { ...DEFAULT_CONFIG, ...saved, ...baked };
     merged.firstPerson = { ...DEFAULT_CONFIG.firstPerson, ...(saved.firstPerson || {}), ...(baked.firstPerson || {}) };
     merged.buttons = { ...DEFAULT_CONFIG.buttons, ...(saved.buttons || {}), ...(baked.buttons || {}) };
+    // 0.9.10: X opens the emote wheel instead of jumping. Older saved settings still have Space there.
+    const lx = merged.buttons['left.x'];
+    if (lx && typeof lx === 'object' && lx.key === 'Space' && !(baked.buttons && baked.buttons['left.x'])) merged.buttons['left.x'] = 'emote';
     // Before 0.9 the right stick click did nothing, and that `null` may be in saved settings. Give it the save-clip
     // action unless you picked something for it (QoL > VR sets clipButtonChosen) or another button already has it.
     if (!saved.clipButtonChosen && !(baked.buttons && 'right.thumbstick' in baked.buttons) && merged.buttons['right.thumbstick'] == null
@@ -689,6 +693,19 @@
   // Ragdolled? Fister exposes isRagdollState (seen in FisterQoL); fall back to other common names and to its
   // ragdoll meshes being on screen.
   function worldVisible(object) { for (let n = object; n; n = n.parent) if (n.visible === false) return false; return true; }
+  // Emoting (dances etc.): like a ragdoll, show the game's own third-person camera so you can see it.
+  function isEmoting(player) {
+    if (!player) return false;
+    if (player.isEmoting === true || player.emoting === true) return true;
+    for (const holder of [player.state, player.serverState, player.lastServerState, player.snapshot, player.netState, player.lastState]) {
+      if (holder && typeof holder === 'object' && holder.isEmoting === true) return true;
+    }
+    if (player.actionEmoteState) return true;
+    if (player.emoteCameraAnchorLocked === true) return true;
+    for (const pose of [player.wormEmotePose, player.twerkEmotePose]) if (pose && pose.active === true) return true;
+    const anim = player.currentAnimationState;
+    return typeof anim === 'string' && /emote|dance|twerk|worm|taunt/i.test(anim);
+  }
   function isRagdolled(player) {
     if (!player) return false;
     for (const key of ['isRagdollState', 'isRagdoll', 'ragdolled', 'isRagdolled', 'ragdollActive']) {
@@ -739,8 +756,18 @@
     if (gameplay && !state.gameplay) safe('text focus', releaseTextFocus);
     state.gameplay = gameplay;
     // Ragdolled: hand the camera back to the game's normal third-person view until you get up.
-    const ragdoll = gameplay && !!safe('ragdoll check', () => isRagdolled(localPlayer()));
-    if (ragdoll !== !!state.ragdoll) log(ragdoll ? 'Ragdolled: following the game camera (third person).' : 'Back on your feet: first-person view.');
+    const ragdolled = gameplay && !!safe('ragdoll check', () => isRagdolled(localPlayer()));
+    // Emotes: a few frames of hysteresis so a one-frame flicker doesn't swap cameras.
+    const emoteNow = gameplay && !ragdolled && !!safe('emote check', () => isEmoting(localPlayer()));
+    const nowMs = performance.now();
+    state.emoteFrames = emoteNow ? (state.emoteFrames || 0) + 1 : 0;
+    if (emoteNow) state.emoteSeenAt = nowMs;
+    const emoting = !ragdolled && (state.emoting ? nowMs - (state.emoteSeenAt || 0) < 300 : state.emoteFrames >= 3);
+    if (emoting !== !!state.emoting) log(emoting ? 'Emoting: following the game camera (third person).' : 'Emote over: first-person view.');
+    state.emoting = emoting;
+    const ragdoll = ragdolled || emoting; // both use the game's third-person camera
+    if (ragdolled !== !!state.ragdolledOnly) log(ragdolled ? 'Ragdolled: following the game camera (third person).' : 'Back on your feet: first-person view.');
+    state.ragdolledOnly = ragdolled;
     state.ragdoll = ragdoll;
     const inBody = gameplay && !ragdoll;
     if (inBody) { safe('first-person lock', lockFirstPerson); safe('screen shake', suppressShake); }
@@ -1589,7 +1616,7 @@
     const sample = moved / sent;
     if (Math.abs(sample) < 2e-5 || Math.abs(sample) > 0.05) return;
     if (Math.sign(sample) !== Math.sign(aim[key])) {
-      if (++aim[flip] >= 4) { aim[key] = sample; aim[flip] = 0; }
+      if (++aim[flip] >= 12) { aim[key] = sample; aim[flip] = 0; }
       return;
     }
     aim[flip] = 0;
@@ -1604,13 +1631,19 @@
     const scale = state.rig && state.rig.scale.x || 1;
     let dist = (Number(config.aimDistance) || 10) * scale;
     const player = localPlayer();
-    if (player && player.mesh && player.mesh.isObject3D && t.d.y < -0.02) {
+    if (player && player.mesh && player.mesh.isObject3D) {
+      // The floor: the lowest the body has been over the last few seconds. Its current height is useless mid-jump
+      // or mid-air-kick (the "floor" ended up right under your hand and the aim went straight down).
       player.mesh.getWorldPosition(t.f);
-      const hit = (t.f.y - t.o.y) / t.d.y;
-      if (hit > 0.3 * scale && hit < dist) dist = hit;
+      const now = performance.now();
+      if (state.groundY === undefined || t.f.y <= state.groundY || now - state.groundYAt > 2500) { state.groundY = t.f.y; state.groundYAt = now; }
+      if (t.d.y < -0.02) {
+        const hit = (state.groundY - t.o.y) / t.d.y;
+        if (hit > 0.8 * scale && hit < dist) dist = hit;
+      }
     }
-    // Walls, blocks, other players: whatever the ray meets first.
-    const wall = safe('aim raycast', () => raycastWorld(t.o, t.d, dist, 0.3 * scale));
+    // Walls, blocks, other players: whatever the ray meets first (ignoring anything within 0.8 m of the hand).
+    const wall = safe('aim raycast', () => raycastWorld(t.o, t.d, dist, 0.8 * scale));
     if (typeof wall === 'number' && wall < dist) dist = wall;
     t.p.copy(t.o).addScaledVector(t.d, dist);
     state.aimDist = dist / scale;
@@ -1628,7 +1661,7 @@
     if (now - cache.at > 1500 || cache.scene !== scene) {
       cache.at = now; cache.scene = scene; cache.boxes = [];
       const skip = new Set([state.rig]);
-      for (const p of players) for (const k of ['mesh', 'avatarVisualRoot', 'avatarFlipPivot']) if (p && p[k] && p[k].isObject3D) skip.add(p[k]);
+      for (const p of players) for (const k of ['mesh', 'avatarVisualRoot', 'avatarFlipPivot', ...ITEM_KEYS]) if (p && p[k] && p[k].isObject3D) skip.add(p[k]);
       const v = cache.v;
       const walk = (node) => {
         if (skip.has(node) || node.visible === false) return;
@@ -1645,7 +1678,8 @@
             }
             // Skip huge boxes (sky, the ground) and specks; the ground is handled as a plane.
             const size = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
-            if (size > 0.05 && size < 200) cache.boxes.push([min, max]);
+            const thin = Math.min(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+            if (size > 0.05 && (size < 200 || thin < 3)) cache.boxes.push([min, max]); // huge but flat = floor slab
           }
         }
         for (const child of node.children) walk(child);
@@ -1665,7 +1699,8 @@
       return t0;
     };
     let best = Infinity;
-    for (const [min, max] of cache.boxes) { const t = hitBox(min, max); if (t < best) best = t; }
+    const inside = (min, max) => o.x > min[0] && o.x < max[0] && o.y > min[1] && o.y < max[1] && o.z > min[2] && o.z < max[2];
+    for (const [min, max] of cache.boxes) { if (inside(min, max)) continue; const t = hitBox(min, max); if (t < best) best = t; }
     // Other players (they move): a rough box around each body.
     const v = cache.v;
     for (const p of players) {
@@ -1701,13 +1736,22 @@
     const entry = aimEntry();
     if (!entry || !state.gameplay || state.uiHit || state.uiPress) { aim.lastYaw = null; return; }
     const { tmp, gameCamera } = state;
+    // While the game itself turns or flips you (air kick, acrobatic flip, finisher, emote camera), leave the aim
+    // alone: the camera moves without our mouse input, which used to corrupt the learned mouse ratio.
+    const me = localPlayer();
+    if (me && (me.airKickPoseActive === true || Number(me.acrobaticFlipVisualRemaining) > 0 || me.finisherRenderActive === true
+        || me.emoteCameraAnchorLocked === true || me.replayFacingActive === true)) { aim.lastYaw = null; state.aimPaused = true; return; }
+    state.aimPaused = false;
     const target = aimTarget(entry);
     // Direction from your body (where the game's aim starts) to the spot your hand points at.
     const player = localPlayer();
     let from;
     if (config.aimOrigin !== 'camera' && player && player.mesh && player.mesh.isObject3D) {
-      // Mesh root sits at body + 0.2; the shoulder is 1 unit above it (in the mesh's own scale).
-      from = player.mesh.localToWorld(tmp.v4.set(0, 1, 0));
+      // Mesh root sits at body + 0.2; the shoulder is 1 unit straight up (world up, as the server adds it). Not the
+      // mesh's own up: that flips over during air kicks and flips.
+      player.mesh.getWorldPosition(tmp.v4);
+      tmp.v4.y += 1 * Math.abs(player.mesh.getWorldScale(tmp.v3).y || 1);
+      from = tmp.v4;
     } else from = gameCamera.getWorldPosition(tmp.v4);
     tmp.v3.subVectors(target, from);
     if (tmp.v3.lengthSq() < 1e-6) { entry.group.getWorldQuaternion(tmp.q3); tmp.v3.set(0, 0, -1).applyQuaternion(tmp.q3); }
@@ -1897,7 +1941,7 @@
 
   // In a match (no menu open) the panel is a HUD: only the game's overlays (health, style, scoreboard, charge bar),
   // see-through, without the full-screen containers behind the game canvas (they painted a big gray slab).
-  const hudMode = () => !!(state.gameplay && !state.ragdoll && !state.pointerLockReleased);
+  const hudMode = () => !!(state.gameplay && !state.ragdoll && !state.pointerLockReleased && !state.emoteWheel);
 
   // --- 1920x1080 virtual screen ----------------------------------------------------------------------------------
   // A transformed <body> is the containing block for position:fixed elements, so giving it a 1920x1080 box makes the
@@ -2359,6 +2403,8 @@
     }
     // Don't leave keyboard focus on a menu button: the game would stop seeing WASD.
     setTimeout(() => { const ae = document.activeElement; if (ae && (ae.tagName === 'BUTTON' || ae.tagName === 'A')) ae.blur(); }, 0);
+    // Picked something on the emote wheel: let go of the wheel key (after the game has seen the click).
+    if (state.emoteWheel) setTimeout(() => closeEmoteWheel('emote picked'), 60);
     if (state.menu) state.menu.dirty = true;
     return true;
   }
@@ -2410,6 +2456,16 @@
     if (real) state.lockTarget = real;
   }, true);
   try { const real = pointerLockDescriptor && pointerLockDescriptor.get.call(document); if (real) state.lockTarget = real; } catch {}
+  const nativeExitPointerLock = Document.prototype.exitPointerLock;
+  if (nativeExitPointerLock) {
+    Document.prototype.exitPointerLock = function exitPointerLock(...args) {
+      if (state.presenting && config.spoofPointerLock && !state.pointerLockReleased) {
+        state.pointerLockReleased = true;
+        setTimeout(() => document.dispatchEvent(new Event('pointerlockchange')), 0);
+      }
+      return nativeExitPointerLock.apply(this, args);
+    };
+  }
   function spoofPointerLock(on) {
     if (!pointerLockDescriptor || !config.spoofPointerLock) return;
     if (on === state.lockSpoofed) { if (on) document.dispatchEvent(new Event('pointerlockchange')); return; }
@@ -2935,10 +2991,30 @@
     });
   }
 
+  function closeEmoteWheel(why) {
+    const wheel = state.emoteWheel;
+    if (!wheel) return;
+    state.emoteWheel = null;
+    sendKey(wheel.key, false);
+    if (state.menu) state.menu.dirty = true;
+    log('Emote wheel: released ' + wheel.key + ' (' + why + ').');
+  }
   function runAction(action, down, frame, hand) {
     if (!action) return;
     if (action === 'recenter') { if (down) { recenter(frame); reassertFocus('recenter'); } return; }
     if (action === 'refocus') { if (down) reassertFocus('button'); return; }
+    if (action === 'emote') {
+      // X: hold the emote wheel key until an emote is picked with the laser (or X is pressed again).
+      if (!down) return;
+      if (state.emoteWheel) { closeEmoteWheel('X pressed again'); return; }
+      const key = config.emoteKey || 'KeyE';
+      state.emoteWheel = { key, since: performance.now() };
+      sendKey(key, true);
+      if (state.menu) { state.menu.dirty = true; state.menu.lastDraw = 0; }
+      pulse(hand, 0.3, 30);
+      log('Emote wheel: holding ' + key + '. Point at an emote and pull the trigger.');
+      return;
+    }
     if (action === 'clip') {
       // Press and release the game's own "save clip" binding (looked up by FisterQoL from the game's controls).
       if (down) {
@@ -3043,6 +3119,7 @@
     const session = frame && frame.session;
     if (!session) return;
     let move = null, turn = null, scroll = 0;
+    if (state.emoteWheel && performance.now() - state.emoteWheel.since > 15000) closeEmoteWheel('timed out');
     for (const source of session.inputSources) {
       const pad = source.gamepad;
       const hand = source.handedness;
@@ -3103,6 +3180,7 @@
   }
 
   function releaseAllInput() {
+    state.emoteWheel = null;
     for (const code of [...state.keysDown]) sendKey(code, false);
     for (const button of [...mouseButtonsHeld]) sendMouseButton(button, false);
     if (state.uiPress) uiPress(false);
@@ -3298,7 +3376,7 @@
         + ' · first-person flag: ' + (state.fp ? state.fp.label : 'none'),
       'Players: ' + (state.gameScene ? 'game scene' : state.lateScene ? 'map probe' : 'not found') + (state.reprobe ? ' (re-searching)' : '')
         + ' · local: ' + (player ? 'yes' : 'no'),
-      'Aim: ' + config.aimMode + ' · learned ' + (state.aim.ratioX * 1000).toFixed(2) + ' mrad/px' + (state.aim.stuck > 30 ? ' · NOT RESPONDING' : ''),
+      'Aim: ' + config.aimMode + (state.aimPaused ? ' (paused: air kick/flip)' : '') + (state.emoteWheel ? ' · emote wheel open' : '') + (state.emoting ? ' · emoting' : '') + ' · learned ' + (state.aim.ratioX * 1000).toFixed(2) + ' mrad/px' + (state.aim.stuck > 30 ? ' · NOT RESPONDING' : ''),
       'Menu panel: ' + (state.menu ? (state.overlayOk ? 'drawn directly (' + (state.overlayDraws || 0) + ' frames, ' + (state.overlayStatus || '') + ')' : 'three.js mesh' + (state.overlayStatus ? ' (direct: ' + state.overlayStatus + ')' : '')) + (state.vscreen ? ' · 1920x1080 screen' : '') + (hudMode() ? ' (HUD)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
         + ' · laser: ' + (state.uiHit ? 'on ' + state.uiHit.element.tagName.toLowerCase() : 'off') + ' · mouse captured: ' + (document.pointerLockElement ? 'yes' : 'no'),
       'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
@@ -3502,7 +3580,7 @@
       console.log(text);
       return out;
     },
-    _internals: { screenRect, applyVirtualScreen, captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
+    _internals: { isEmoting, screenRect, applyVirtualScreen, captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
       lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, startStandalone, handOffStandalone, isMainRenderer, sceneHasBuildingBlocks, runDueTimers, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
   });
 

@@ -9,7 +9,8 @@
 // So the bookmark restarts the game inside this tab: it freezes the running copy (stops its frame loop, timers, sound,
 // network and frees its WebGL context), then writes a fresh copy of the fister.fun home page into a full-window
 // same-origin frame with FisterQoL running first. If the game in the frame reloads itself, the frame is rebuilt the
-// same way so QoL stays on.
+// same way so QoL stays on, at the URL the game went to. Only the home page gets QoL, and if the game keeps reloading
+// itself (3 times in 30 s) the loader stops rebuilding, leaves the game running without QoL and shows a log to copy.
 function qolLoader(payload, vrConfig, applyEachTime) {
   var cfg = JSON.stringify(vrConfig || {});
   return '(function(){'
@@ -30,7 +31,10 @@ function qolLoader(payload, vrConfig, applyEachTime) {
     // A script nonce, in case the site's policy ever needs one.
     + 'var nonce="";try{var ns=D.querySelector("script[nonce]");if(ns)nonce=ns.nonce||ns.getAttribute("nonce")||"";}catch(e){}'
     + 'var fail=function(e){W.__fisterQolBookmarkletLoading=false;say("could not start ("+(e&&e.message||e)+").");};'
-    + 'var home=function(){return fetch("/",{credentials:"include",cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("home page "+r.status);return r.text();});};'
+    + 'var L=W.__fisterQolLog=[];var add=function(t){L.push(new Date().toISOString().slice(11,19)+" "+String(t).slice(0,500));if(L.length>300)L.shift();};'
+    + 'var str=function(a){return [].map.call(a,function(x){return x&&x.stack?x.stack:typeof x==="object"?(function(){try{return JSON.stringify(x);}catch(e){return String(x);}})():String(x);}).join(" ");};'
+    + 'add("FisterQoL bookmarklet on "+location.href+" · "+navigator.userAgent);'
+    + 'var home=function(url){return fetch(url||"/",{credentials:"include",cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("home page "+r.status);return r.text();});};'
     // Freeze the copy of the game that is already running in this page.
     + 'var freeze=function(){'
     + 'try{W.stop();}catch(e){}'
@@ -44,27 +48,72 @@ function qolLoader(payload, vrConfig, applyEachTime) {
     // Old sockets close the next time the old game sends or receives on them; streams (WebTransport, fetch bodies) end.
     + 'try{var cl=function(w){try{w.close();}catch(e){}};var WSP=WebSocket.prototype;WSP.send=function(){cl(this);};'
     + 'var dd=Object.getOwnPropertyDescriptor(MessageEvent.prototype,"data");'
-    + 'Object.defineProperty(MessageEvent.prototype,"data",{configurable:true,get:function(){if(this.target instanceof WebSocket)cl(this.target);return dd.get.call(this);}});'
+    // Any message to the old game (sockets, BroadcastChannel, ports, workers) closes its channel and stops its handler,
+    // and so do localStorage change events: a frozen copy reacting to the new one (e.g. "another tab is open") must not
+    // make either of them reload.
+    + 'Object.defineProperty(MessageEvent.prototype,"data",{configurable:true,get:function(){var t=this.target;if(t&&typeof t.close==="function")cl(t);else if(t&&typeof t.terminate==="function"){try{t.terminate();}catch(e){}}throw new Error("frozen");}});'
+    + '["key","newValue","oldValue","storageArea","url"].forEach(function(k){try{Object.defineProperty(StorageEvent.prototype,k,{configurable:true,get:function(){throw new Error("frozen");}});}catch(e){}});'
     + 'W.WebSocket=function(){return{readyState:3,send:function(){},close:function(){},addEventListener:function(){},removeEventListener:function(){}};};'
     + 'var RP=ReadableStreamDefaultReader.prototype;RP.read=function(){try{this.cancel();}catch(e){}return Promise.resolve({done:true,value:undefined});};'
     + 'if(W.RTCPeerConnection)RTCPeerConnection.prototype.addIceCandidate=function(){try{this.close();}catch(e){}return Promise.resolve();};}catch(e){}'
     + '};'
     // Write a fresh home page into the frame, with FisterQoL first in <head>.
     + 'var code=null;'
-    + 'W.__fisterQolBoot=function(w){var d=w.document,el=d.createElement("script");if(nonce)el.nonce=nonce;el.textContent=code;(d.head||d.documentElement).appendChild(el);el.remove();};'
+    + 'W.__fisterQolBoot=function(w){'
+    // Keep what the game says while it starts, for the log (Copy log on the stop banner).
+    + 'try{w.addEventListener("error",function(e){add("error: "+e.message+" @ "+String(e.filename||"").split("/").pop()+":"+e.lineno);});'
+    + 'w.addEventListener("unhandledrejection",function(e){var r=e.reason;add("unhandled rejection: "+(r&&(r.stack||r.message)||r));});'
+    + '["error","warn","info"].forEach(function(k){var o=w.console[k];w.console[k]=function(){var t=str(arguments);if(k!=="info"||/fister/i.test(t))add("console."+k+": "+t);return o.apply(this,arguments);};});'
+    + 'w.addEventListener("pagehide",function(){lastUrl=w.location.pathname+w.location.search+w.location.hash;add("frame unloading (the game navigated or reloaded) from "+w.location.href);});}catch(e){}'
+    // Sites that reload until a service worker controls the page would never stop in the frame, whose document is
+    // written by script and may not count as controlled. Report the page's own controller instead.
+    + 'try{var top=W.navigator.serviceWorker;if(top&&top.controller&&SWCP(w)){Object.defineProperty(SWCP(w),"controller",{configurable:true,get:function(){return top.controller;}});add("frame uses the page\'s service worker controller");}}catch(e){}'
+    // A new service worker taking control makes many sites reload; in the frame that would drop FisterQoL every time.
+    + 'try{var SWC=w.ServiceWorkerContainer&&w.ServiceWorkerContainer.prototype;if(SWC){var ae=SWC.addEventListener;'
+    + 'SWC.addEventListener=function(t){if(t==="controllerchange"){add("ignored a service-worker controllerchange listener (it would reload the page)");return;}return ae.apply(this,arguments);};'
+    + 'Object.defineProperty(SWC,"oncontrollerchange",{configurable:true,get:function(){return null;},set:function(){add("ignored oncontrollerchange");}});}}catch(e){}'
+    + 'var d=w.document,el=d.createElement("script");if(nonce)el.nonce=nonce;el.textContent=code;(d.head||d.documentElement).appendChild(el);el.remove();'
+    + 'add("FisterQoL started in the frame at "+w.location.href+(w.__fisterQolBrowserLoading?"":" (but it did not hook in)"));};'
     + 'var write=function(f,html){'
     + 'if(nonce)html=html.replace(/\\snonce="[^"]*"/g," nonce=\\""+nonce+"\\"");'
     + 'var tag="<script"+(nonce?" nonce=\\""+nonce+"\\"":"")+">parent.__fisterQolBoot(window)<\\/script>";'
     + 'var m=/<head[^>]*>/i.exec(html);html=m?html.slice(0,m.index+m[0].length)+tag+html.slice(m.index+m[0].length):tag+html;'
     + 'var d=f.contentDocument;d.open();d.write(html);d.close();f.__fisterQolBooted=true;'
     + 'try{f.contentWindow.focus();}catch(e){}};'
+    + 'var rebuilds=[],lastUrl="/";'
+    + 'var SWCP=function(w){return w.ServiceWorkerContainer&&w.ServiceWorkerContainer.prototype;};'
+    + 'var pathOf=function(u){try{return new URL(u,location.origin).pathname;}catch(e){return u;}};'
+    // Shown when the loader gives up, over the game. No timers: they're switched off in this (frozen) page.
+    + 'var banner=function(){var b=D.createElement("div");b.id="fister-qol-stopped";'
+    + 'b.style.cssText="position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:2147483647;width:min(640px,94vw);background:#c0c0c0;color:#000;font:14px Tahoma,Arial,sans-serif;padding:10px 12px;box-shadow:inset -1px -1px #0a0a0a,inset 1px 1px #fff,inset -2px -2px #808080,inset 2px 2px #dfdfdf;";'
+    + 'var t=D.createElement("div");t.textContent="FisterQoL stopped: the game kept reloading itself while starting with FisterQoL, so it is running without FisterQoL now (VR mode is off too). Press Copy log and send the text so this can be fixed.";'
+    + 'var row=D.createElement("div");row.style.cssText="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap";'
+    + 'var btn=function(label,fn){var x=D.createElement("button");x.textContent=label;x.style.cssText="font:bold 14px Tahoma,Arial,sans-serif;padding:6px 14px;background:#c0c0c0;border:0;box-shadow:inset -1px -1px #0a0a0a,inset 1px 1px #fff,inset -2px -2px #808080,inset 2px 2px #dfdfdf;";x.onclick=fn;row.appendChild(x);return x;};'
+    + 'var area=D.createElement("textarea");area.readOnly=true;area.style.cssText="display:none;width:100%;height:160px;margin-top:8px;font:11px monospace";'
+    + 'btn("Copy log",function(){var text=L.join("\\n");area.value=text;area.style.display="block";var ok=function(){this.textContent="Copied";}.bind(this);'
+    + 'try{navigator.clipboard.writeText(text).then(ok,function(){area.select();try{D.execCommand("copy");}catch(e){}});}catch(e){area.select();try{D.execCommand("copy");}catch(e2){}}});'
+    + 'btn("Close",function(){b.remove();});'
+    + 'b.appendChild(t);b.appendChild(row);b.appendChild(area);D.body.appendChild(b);};'
     + 'var frame=function(){var f=D.createElement("iframe");f.id="fister-qol-frame";'
     + 'f.allow="fullscreen *; xr-spatial-tracking *; autoplay *; microphone *; camera *; clipboard-read *; clipboard-write *; gamepad *; screen-wake-lock *";'
     + 'f.style.cssText="position:fixed;left:0;top:0;width:100%;height:100%;border:0;margin:0;padding:0;z-index:2147483647;background:#000;display:block";'
     + 'f.addEventListener("load",function(){var w;try{w=f.contentWindow;void w.location.href;}catch(e){return;}'
     + 'try{D.title=w.document.title||D.title;}catch(e){}'
-    // The game reloaded itself inside the frame (no FisterQoL in it now): rebuild the frame with QoL again.
-    + 'if(f.__fisterQolBooted&&!w.__fisterQolBrowserLoading&&!f.__fisterQolRebuilding){f.__fisterQolRebuilding=true;home().then(function(html){var n=frame();f.replaceWith(n);write(n,html);}).catch(fail);}});'
+    + 'if(!f.__fisterQolBooted||f.__fisterQolRebuilding)return;'
+    + 'var loc=w.location,blank=loc.protocol==="about:",here=blank?lastUrl:loc.pathname+loc.search+loc.hash;'
+    + 'if(w.__fisterQolBrowserLoading){lastUrl=here;add("frame loaded with FisterQoL at "+here);return;}'
+    // The game navigated or reloaded inside the frame, so this page has no FisterQoL. A location.reload() in a frame
+    // written by script reloads it as about:blank: that means "reload the page that was here".
+    + 'add("frame loaded WITHOUT FisterQoL at "+(blank?"about:blank (the game reloaded itself at "+here+")":here));'
+    + 'try{history.replaceState(null,"",here);}catch(e){}'
+    + 'var plain=function(){if(blank){add("loading "+here+" without FisterQoL");try{w.location.replace(here);}catch(e){}}};'
+    + 'if(pathOf(here)!=="/"){add("not the home page: FisterQoL only runs on the home page, so this page runs without it");plain();return;}'
+    + 'if(W.__fisterQolStopped){plain();return;}'
+    + 'var now=Date.now();rebuilds=rebuilds.filter(function(t){return now-t<30000;});'
+    + 'if(rebuilds.length>=2){W.__fisterQolStopped=true;add("stopped: the game reloaded itself 3 times in 30 s with FisterQoL; running it without FisterQoL");banner();plain();return;}'
+    + 'rebuilds.push(now);f.__fisterQolRebuilding=true;add("restarting the frame with FisterQoL at "+here);'
+    // Rebuild at the URL the game went to (e.g. it added a query parameter), not the original one.
+    + 'home(here.replace(/#.*$/,"")).then(function(html){var n=frame();f.replaceWith(n);write(n,html);}).catch(fail);});'
     + 'return f;};'
     + 'var b=atob(P),u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);'
     + 'Promise.all([new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream("gzip"))).text(),home()]).then(function(r){'

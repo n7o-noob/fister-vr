@@ -106,6 +106,26 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.3: no more reload loops with the FisterQoL bookmarklet
+
+- User report: with the FisterQoL bookmarklet the page reloaded forever.
+- Cause found in testing: `location.reload()` inside the script-written frame reloads it as **about:blank** (the frame
+  never had a real URL). The loader saw "no FisterQoL" and rebuilt at `/`, so any game that reloads itself once
+  while starting (e.g. waiting for a service worker) looped forever. Other loop paths: the game navigating to a URL with
+  an extra query parameter (the rebuild used the old URL, so the game redirected again), or to another page (FisterQoL
+  never starts there, so the loader rebuilt forever).
+- Loader now:
+  - treats an about:blank frame load as "reload the last URL" (`lastUrl`, taken on the frame's `pagehide`);
+  - rebuilds at the URL the game went to and keeps the top URL in sync;
+  - only rebuilds the home page; other pages load normally without FisterQoL;
+  - stops after 3 rebuilds in 30 s, loads the game without FisterQoL, and shows a banner with **Copy log**
+    (`window.__fisterQolLog`: frame loads/unloads, errors, unhandled rejections, console errors/warnings, Fister info);
+  - in the frame, ignores service-worker `controllerchange` listeners and reports the page's own SW controller;
+  - freezes the old copy harder: any message event or localStorage change event reaching it closes the channel (or
+    terminates the worker) and throws, so it can't react to the new copy.
+- Not verified on the real site: the exact reason Fister reloaded is unknown. If the banner appears, the copied log
+  shows it.
+
 ## v0.9.2: save-clip button feedback
 
 - User report: pressing the save-clip button did nothing. There was no feedback, and older saved settings could

@@ -5,3 +5,4 @@ test/site/three.core.js
 .DS_Store
 test/clip-frame.png
 test/setup-qol.png
+test/reload-stopped.png

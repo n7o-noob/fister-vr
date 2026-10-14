@@ -34,7 +34,7 @@ const literal = JSON.stringify(body)
   .replace(/</g, '\\u003c')
   .split(String.fromCharCode(0x2028)).join('\\u2028')
   .split(String.fromCharCode(0x2029)).join('\\u2029');
-const template = read('site/page-template.html').replace('__LAYER_SOURCE__', () => literal);
+const template = read('site/page-template.html').replace('__LAYER_SOURCE__', () => literal).split('__VERSION__').join(version);
 const split = template.indexOf('</style>') + '</style>'.length;
 const html = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
   + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'

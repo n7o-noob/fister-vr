@@ -1,0 +1,14 @@
+# Tests
+
+Stand-in "games" built on three.js that mimic Fister's structure (player map
+with head/arms, Win95-style HUD, pause menu, pointer-lock mouse look,
+ragdolls, player-list rebuilds), plus Playwright scripts that drive the VR
+layer through simulated XR frames.
+
+They are for development only. To run them:
+
+1. `npm i playwright three`, then copy `node_modules/three/build/three.module.js`
+   and `three.core.js` into `test/site/`.
+2. `node tools/build.cjs` (the tests load `dist/fister-vr.bookmarklet.txt`).
+3. `node test/run12.cjs` (menus, aim, layers), `node test/run11.cjs` (black-flash
+   fixes), `node test/run8.cjs` (walking / player rebuild), and so on.

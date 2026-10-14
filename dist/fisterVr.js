@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.7.7
+// @version      0.7.8
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.7.7';
+  const VERSION = '0.7.8';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -59,7 +59,9 @@
     // forward pushes them out in front of you, inward pulls them toward your centre line.
     handOffset: { forward: 0.15, inward: 0.06, up: 0 },
     // Hide your own torso and legs (and clothing/cosmetics on them) in the headset. Head, arms and held items stay.
-    hideBody: true,               // Fister names its arms backwards: game 'rightArm' is your left arm
+    hideBody: true,
+    // Mirror each hand side to side so its claws/spikes face outward (they faced your other hand). Visual, only you.
+    mirrorHands: true,
     armOverride: true,            // legacy switch; false behaves like armMode 'off'
     armAxis: 'auto',              // arm mesh's long axis toward the hand: 'auto' | '-y' | 'y' | '-z' | 'z' | '-x' | 'x'
     armRotationOffsetDeg: [0, 0, 0],
@@ -1177,7 +1179,7 @@
     shoulder[axisIndex] = sign < 0 ? max[axisIndex] : min[axisIndex];
     hand[axisIndex] = sign < 0 ? min[axisIndex] : max[axisIndex];
     axis[axisIndex] = sign;
-    const info = { axis: new C.Vector3(...axis), shoulder: new C.Vector3(...shoulder), hand: new C.Vector3(...hand),
+    const info = { axisIndex, axis: new C.Vector3(...axis), shoulder: new C.Vector3(...shoulder), hand: new C.Vector3(...hand),
       label: (sign < 0 ? '-' : '') + 'xyz'[axisIndex] };
     arm.__fisterVrArm = info;
     log('Arm measured: long axis ' + info.label + ', length ' + (max[axisIndex] - min[axisIndex]).toFixed(2));
@@ -1237,6 +1239,20 @@
         t.qw.setFromUnitVectors(info.axis, t.dir);
       }
       t.qw.multiply(t.qo);
+      // Mirror across the plane that splits the hand into inside/outside: flip the arm's local axis that points
+      // most sideways (perpendicular to the arm and to world up).
+      if (config.mirrorHands && config.armMode === 'hand') {
+        t.dir.copy(info.axis).applyQuaternion(t.qw);           // arm direction, world
+        t.right.set(0, 1, 0).cross(t.dir);                      // sideways, world
+        if (t.right.lengthSq() > 1e-8) {
+          t.right.normalize().applyQuaternion(t.qp.copy(t.qw).invert()); // sideways, arm local
+          const c = [Math.abs(t.right.x), Math.abs(t.right.y), Math.abs(t.right.z)];
+          c[info.axisIndex] = -1;
+          const k2 = c.indexOf(Math.max(...c));
+          const sideIndex = info.sideIndex === undefined ? (info.sideIndex = k2) : info.sideIndex;
+          arm.scale.setComponent(sideIndex, -arm.scale.getComponent(sideIndex));
+        }
+      }
       arm.parent.getWorldQuaternion(t.qp);
       arm.quaternion.copy(t.qp.invert().multiply(t.qw));
       arm.updateMatrixWorld(true);

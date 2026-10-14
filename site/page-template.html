@@ -206,6 +206,14 @@ ul.notes li { max-width: 68ch; }
           <small>The little boxes that show where your controllers are.</small>
         </div>
         <div class="field">
+          <label for="mirrorHands">Hand claws</label>
+          <select id="mirrorHands">
+            <option value="true" selected>Outside (mirrored)</option>
+            <option value="false">As the game draws them</option>
+          </select>
+          <small>Hands on controllers only. Flips each hand so its claws face out. Only you see it.</small>
+        </div>
+        <div class="field">
           <label for="hideBody">Your torso and legs</label>
           <select id="hideBody">
             <option value="true" selected>Hidden, with clothing</option>
@@ -311,7 +319,7 @@ ul.notes li { max-width: 68ch; }
 
 <script>
 const LAYER_SOURCE = __LAYER_SOURCE__;
-const ids = ['aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody'];
+const ids = ['aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody', 'mirrorHands'];
 const codeEl = document.getElementById('code');
 const sizeEl = document.getElementById('size');
 const statusEl = document.getElementById('status');
@@ -335,6 +343,7 @@ function overrides() {
     hideOutlines: v('hideOutlines'),
     swapArms: true, // Fister names its arms backwards; always corrected
     hideBody: v('hideBody') === 'true',
+    mirrorHands: v('mirrorHands') === 'true',
     handOffset: (() => { const [f, i] = v('handOffset').split(',').map(Number); return { forward: f, inward: i, up: 0 }; })(),
   };
 }

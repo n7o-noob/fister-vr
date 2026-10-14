@@ -36,6 +36,9 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
     const handEnd = (arm) => arm.localToWorld(arm.__fisterVrArm.hand.clone());
     res.hands = { rightHandError: +handEnd(me.leftArm).distanceTo(expectRight).toFixed(4),   // swapped: game leftArm = your right
       leftHandError: +handEnd(me.rightArm).distanceTo(s.rig.localToWorld(new T.Vector3(-0.2 + 0.06, -0.2, -0.45))).toFixed(4) };
+    const mir = (arm) => { const i = arm.__fisterVrArm; const e = arm.matrixWorld.elements; const col = new T.Vector3(e[i.sideIndex * 4], e[i.sideIndex * 4 + 1], e[i.sideIndex * 4 + 2]).normalize();
+      return { det: +arm.matrixWorld.determinant().toFixed(4), long: i.label, side: 'xyz'[i.sideIndex], sideUpDot: +Math.abs(col.y).toFixed(2) }; };
+    res.mirror = { right: mir(me.leftArm), left: mir(me.rightArm) };
     res.size = { armLength: +handEnd(me.leftArm).distanceTo(me.leftArm.localToWorld(me.leftArm.__fisterVrArm.shoulder.clone())).toFixed(3), boxScale: c0.group.children.find(o => /box/.test(o.name)).scale.x };
     // Leaving VR puts everything back.
     r.xr.dispatchEvent({ type: 'sessionend' });

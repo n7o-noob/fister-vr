@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.8.3
+// @version      0.9.0
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.8.3';
+  const VERSION = '0.9.0';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -104,7 +104,7 @@
       'left.x': { key: 'Space' },
       'left.y': { key: 'Escape' },
       'left.thumbstick': 'recenter',
-      'right.thumbstick': null,
+      'right.thumbstick': 'clip', // save a clip, using the game's own clip key (FisterQoL build)
     },
     moveStick: 'left',            // stick that sends WASD
     moveThreshold: 0.45,
@@ -116,6 +116,13 @@
     snapTurnPixels: 250,          // mouse movementX sent per snap; tune to your in-game sensitivity
     smoothTurnPixelsPerFrame: 12,
     showStatus: true,
+    showButton: true,             // ENTER VR / VR INFO / COPY LOG buttons on the page (FisterQoL also has them in settings)
+    // Clips (FisterQoL build): while the game is recording a clip, a first-person view from the headset is rendered at clip
+    // size and handed to the clip recorder, so clips taken in VR show what you saw instead of a frozen flat frame.
+    clipView: 'headset',          // 'headset' | 'off'
+    clipHeight: 720,              // pixel height of that view (the width follows your screen's shape)
+    clipFov: 90,                  // vertical field of view, degrees
+    clipSmoothing: 0.6,           // 0 = raw head motion, 0.9 = very steady
   };
 
   const CONFIG_KEY = 'fister-vr-config';
@@ -411,7 +418,7 @@
     // A colour clear after the headset view was drawn this frame would wipe it (black flash). Keep depth/stencil.
     const originalClear = renderer.clear;
     renderer.clear = function fisterVrClear(color = true, depth = true, stencil = true) {
-      if (state.presenting && this === state.renderer && state.mainRendered && color) {
+      if (state.presenting && this === state.renderer && state.mainRendered && color && !state.clipRendering) {
         const target = this.getRenderTarget();
         if (target === null || target === state.xrTarget) {
           state.blockedClears = (state.blockedClears || 0) + 1;
@@ -551,7 +558,9 @@
     // so repeat the last view instead.
     if (!state.mainRendered && state.threeScene && (state.frameCamera || state.gameCamera)) {
       state.repeats = (state.repeats || 0) + 1;
-      renderMain(renderer, renderer.__fisterVrOriginalRender, state.threeScene, state.frameCamera || state.gameCamera);
+      state.repeating = true;
+      try { renderMain(renderer, renderer.__fisterVrOriginalRender, state.threeScene, state.frameCamera || state.gameCamera); }
+      finally { state.repeating = false; }
     }
   }
 
@@ -743,7 +752,102 @@
         try { renderer.resetState(); } catch {}
         if (!state.overlayFailed) { state.overlayFailed = true; record('error', ['Drawing the panel directly failed; using three.js for it:', error]); }
       }
+      if (!state.repeating && clipWanted()) safe('clip view', () => renderClipView(renderer, originalRender, scene));
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Clip view (FisterQoL build). In VR the game canvas stops updating (three.js draws into the headset's framebuffer),
+  // so a clip recorded in VR would be one frozen frame. While the recorder is taking frames, draw a steadied
+  // first-person view from the headset into a corner of the canvas, copy it to a 2D canvas, and give that to the
+  // recorder through FisterQoL's clip hook (fisterVR.clipFrame).
+  // ---------------------------------------------------------------------------------------------------------
+  function clipWanted() {
+    if (config.clipView === 'off' || !state.presenting) return false;
+    return performance.now() - (state.clipCaptureAt || 0) < 1500;
+  }
+  function clipSize(renderer) {
+    const canvas = renderer.domElement;
+    const cw = canvas.clientWidth || innerWidth || 1280, ch = canvas.clientHeight || innerHeight || 720;
+    const aspect = Math.min(3, Math.max(0.4, cw / ch));
+    let h = Math.round(Math.min(Math.max(240, Number(config.clipHeight) || 720), 2160));
+    let w = Math.round(h * aspect);
+    // The view is drawn into the canvas before copying; three.js sized the canvas to the headset framebuffer.
+    const k = Math.min(1, canvas.width / w, canvas.height / h);
+    w = Math.max(2, Math.floor(w * k / 2) * 2); h = Math.max(2, Math.floor(h * k / 2) * 2);
+    return { w, h };
+  }
+  function renderClipView(renderer, originalRender, scene) {
+    const C = state.classes;
+    if (!C || !state.view || !C.Vector3 || !C.Quaternion) return;
+    const { w, h } = clipSize(renderer);
+    let clip = state.clip;
+    if (!clip) {
+      const canvas = document.createElement('canvas');
+      clip = state.clip = { canvas, ctx: canvas.getContext('2d', { alpha: false }), cam: null, pos: new C.Vector3(), quat: new C.Quaternion(),
+        scl: new C.Vector3(), primed: false, frames: 0, ms: 0, frameAt: 0 };
+    }
+    if (!clip.ctx) return;
+    if (!clip.cam) { clip.cam = state.view.clone(false); clip.cam.name = 'fister-vr-clip-view'; }
+    const cam = clip.cam;
+    // Head pose in world space: three.js copied it onto our view camera during the headset render.
+    state.view.updateMatrixWorld(true);
+    const { tmp } = state;
+    state.view.matrixWorld.decompose(tmp.v, tmp.q, clip.scl);
+    const smooth = Math.min(0.95, Math.max(0, Number(config.clipSmoothing) || 0));
+    if (!clip.primed || smooth === 0 || clip.pos.distanceToSquared(tmp.v) > 25) { clip.pos.copy(tmp.v); clip.quat.copy(tmp.q); clip.primed = true; }
+    else { clip.pos.lerp(tmp.v, 1 - smooth); clip.quat.slerp(tmp.q, 1 - smooth); }
+    cam.position.copy(clip.pos);
+    cam.quaternion.copy(clip.quat);
+    cam.scale.set(1, 1, 1);
+    cam.fov = Math.min(120, Math.max(40, Number(config.clipFov) || 90));
+    cam.aspect = w / h;
+    const k = Math.max(0.05, clip.scl.x || 1);
+    cam.near = state.view.near * k; cam.far = state.view.far * k;
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld(true);
+    const t0 = performance.now();
+    const previousTarget = renderer.getRenderTarget();
+    if (!state.vector4Ctor) { try { const vp = renderer.getViewport({ copy(v) { state.vector4Ctor = v.constructor; return this; } }); } catch {} }
+    const previousViewport = state.vector4Ctor ? renderer.getViewport(new state.vector4Ctor()) : null;
+    const canvas = renderer.domElement;
+    state.clipRendering = true;
+    renderer.xr.enabled = false;
+    try {
+      renderer.setRenderTarget(null);
+      const ratio = renderer.getPixelRatio() || 1;
+      renderer.setViewport(0, 0, w / ratio, h / ratio);
+      originalRender.call(renderer, scene, cam);
+      // Copy now, in the same task as the draw (the WebGL canvas keeps no frames). GL's origin is bottom-left.
+      if (clip.canvas.width !== w || clip.canvas.height !== h) { clip.canvas.width = w; clip.canvas.height = h; }
+      clip.ctx.drawImage(canvas, 0, canvas.height - h, w, h, 0, 0, w, h);
+      clip.frames++;
+      clip.frameAt = performance.now();
+    } finally {
+      renderer.xr.enabled = true;
+      state.clipRendering = false;
+      if (previousViewport && previousViewport.isVector4) renderer.setViewport(previousViewport);
+      renderer.setRenderTarget(previousTarget);
+    }
+    const ms = performance.now() - t0;
+    clip.ms = clip.ms ? clip.ms * 0.9 + ms * 0.1 : ms;
+    if (clip.frames === 1) log('Clip view: recording the headset view at ' + w + 'x' + h + '.');
+  }
+  // Called by FisterQoL's clip hook for every frame the game's recorder takes. Returns the canvas with the headset view
+  // (or null outside VR / with the clip view off, so the normal game canvas is used).
+  function clipFrame() {
+    state.clipCaptureAt = performance.now();
+    if (config.clipView === 'off' || !state.presenting || !state.renderer || !state.renderer.xr.isPresenting) return null;
+    const clip = state.clip;
+    if (!clip || !clip.frames) {
+      // First frame of a recording: nothing drawn yet. Hand over a black frame of the right size, not the stale canvas.
+      const { w, h } = state.renderer ? clipSize(state.renderer) : { w: 1280, h: 720 };
+      if (!state.clipBlank) { state.clipBlank = document.createElement('canvas'); }
+      const b = state.clipBlank;
+      if (b.width !== w || b.height !== h) { b.width = w; b.height = h; const c = b.getContext('2d'); if (c) { c.fillStyle = '#000'; c.fillRect(0, 0, w, h); } }
+      return b;
+    }
+    return clip.canvas;
   }
 
   // Grab Three.js constructors from live objects: the game's copy of three.js is a private ES module.
@@ -2690,6 +2794,22 @@
     if (!action) return;
     if (action === 'recenter') { if (down) { recenter(frame); reassertFocus('recenter'); } return; }
     if (action === 'refocus') { if (down) reassertFocus('button'); return; }
+    if (action === 'clip') {
+      // Press and release the game's own "save clip" binding (looked up by FisterQoL from the game's controls).
+      if (down) {
+        const bridge = root.__fisterQolVrBridge;
+        const bound = bridge && typeof bridge.clipInput === 'function' ? bridge.clipInput() : null;
+        state.clipHeld = bound;
+        if (!bound) { warnOnce('clip-key', 'Clip button: no clip key found in the game controls.'); setStatus('No clip key bound in the game controls'); return; }
+        log('Clip button: sending ' + JSON.stringify(bound) + '.');
+        pulse(hand, 0.7, 90);
+        runAction(bound, true, frame, null);
+      } else if (state.clipHeld) {
+        runAction(state.clipHeld, false, frame, null);
+        state.clipHeld = null;
+      }
+      return;
+    }
     // Right trigger on the menu panel clicks the menu instead of punching.
     if (hand === config.aimHand && action.mouse === 0) {
       // Already handled by the select event? Then just consume the gamepad edge.
@@ -2704,6 +2824,18 @@
     }
     if (typeof action.mouse === 'number') sendMouseButton(action.mouse, down);
     else if (typeof action.key === 'string') sendKey(action.key, down);
+  }
+
+  function pulse(hand, intensity, ms) {
+    try {
+      const session = state.renderer && state.renderer.xr && state.renderer.xr.getSession && state.renderer.xr.getSession();
+      for (const src of (session ? session.inputSources : [])) {
+        if (src.handedness !== hand || !src.gamepad) continue;
+        const act = src.gamepad.hapticActuators && src.gamepad.hapticActuators[0];
+        if (act && act.pulse) act.pulse(intensity, ms);
+        else if (src.gamepad.vibrationActuator && src.gamepad.vibrationActuator.playEffect) src.gamepad.vibrationActuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: intensity });
+      }
+    } catch {}
   }
 
   // Controllers that connected before our rig existed never sent us a 'connected' event. three.js assigns controller
@@ -2832,6 +2964,7 @@
     // rAF redirect feeds back into the XR frame: infinite recursion (stack overflow, black frames).
     renderer.xr.setAnimationLoop((time, frame) => xrFrame(renderer, time, frame));
     setStatus('In VR' + (state.fp ? ' · first-person: ' + state.fp.label : ' · first-person: head anchor'));
+    if (root.__fisterQolVrBridge && root.__fisterQolVrBridge.sessionChanged) { try { root.__fisterQolVrBridge.sessionChanged(true); } catch {} }
     log('XR session started. Main camera:', state.gameCamera ? 'found' : 'pending first render');
   }
 
@@ -2850,6 +2983,8 @@
     restoreItems();
     restoreArmScale();
     if (state.rig && state.rig.parent) state.rig.parent.remove(state.rig);
+    if (state.clip) { state.clip.primed = false; state.clip.frames = 0; }
+    if (root.__fisterQolVrBridge && root.__fisterQolVrBridge.sessionChanged) { try { root.__fisterQolVrBridge.sessionChanged(false); } catch {} }
     renderer.xr.setAnimationLoop(null);
     renderer.__fisterVrOriginalLoop.call(renderer, state.gameAnimationLoop.get(renderer) || null);
     const queue = state.rafQueue;
@@ -2888,6 +3023,8 @@
     button.style.position = 'static';
     bar.appendChild(button);
     document.body.appendChild(bar);
+    state.barEl = bar;
+    if (config.showButton === false) bar.style.display = 'none';
 
     const status = document.createElement('div');
     status.id = 'fister-vr-status';
@@ -2895,6 +3032,7 @@
       + 'text-shadow:0 0 3px #000;pointer-events:none;';
     state.statusEl = status;
     document.body.appendChild(status);
+    if (config.showButton === false) status.style.display = 'none';
 
     // "VR info" panel: live debug console + status, for browsers without DevTools (Quest). Also opens in the
     // headset by holding both grips for a second, and shows on the UI panel there.
@@ -3135,8 +3273,23 @@
     return typeof value + ' = ' + JSON.stringify(value);
   }
 
+  function applyButtonVisibility() {
+    const show = config.showButton !== false;
+    if (state.barEl) state.barEl.style.display = show ? 'flex' : 'none';
+    if (state.statusEl) state.statusEl.style.display = show ? '' : 'none';
+  }
+
   root.fisterVR = Object.freeze({
+    version: VERSION,
     console: () => toggleInfoPanel(),
+    // Same as pressing ENTER VR / EXIT VR. Call it from a click so the browser allows the headset session.
+    toggle() { whenBody(ensureVrButton); const b = state.buttonEl; if (b && typeof b.onclick === 'function') { b.onclick(); return true; } return false; },
+    get buttonText() { return state.buttonEl ? state.buttonEl.textContent : ''; },
+    get presenting() { return !!state.presenting || !!(state.standalone && !state.standalone.handedOff); },
+    copyLog: (button) => copyReport(button || null, document.getElementById('fister-vr-info')),
+    applyButtonVisibility,
+    clipFrame,
+    clipStats: () => state.clip ? { frames: state.clip.frames, ms: +state.clip.ms.toFixed(2), width: state.clip.canvas.width, height: state.clip.canvas.height, recording: clipWanted() } : { frames: 0, recording: clipWanted() },
     config,
     state,
     saveConfig,

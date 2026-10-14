@@ -3,3 +3,5 @@ test/site/three.module.js
 test/site/three.core.js
 *.zip
 .DS_Store
+test/clip-frame.png
+test/setup-qol.png

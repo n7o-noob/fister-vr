@@ -103,6 +103,18 @@ ul.notes li { max-width: 68ch; }
     <div class="titlebar"><div class="name"><span class="icon" aria-hidden="true"><b></b><b></b></span><span>Your settings</span></div><div class="tb-btns" aria-hidden="true"><i>_</i><i>□</i><i>×</i></div></div>
     <div class="panel">
       <div class="fields">
+        <div class="field" style="grid-column: 1 / -1">
+          <label for="bundle">What the bookmark loads</label>
+          <select id="bundle">
+            <option value="vr" selected>Fister VR only</option>
+            <option value="qol">Fister VR + FisterQoL __QOL_VERSION__</option>
+          </select>
+          <small id="bundleNote">Just the VR mod. Small and quick to paste.</small>
+        </div>
+        <div class="field" id="qolOptions" hidden style="grid-column: 1 / -1">
+          <label><input type="checkbox" id="applyEach" checked> Use these VR settings every time you tap the bookmark</label>
+          <small>Turn off to set them once and then change them in the game under Settings &gt; QoL &gt; VR. Clip view, the save-clip button and the other QoL options are in that tab.</small>
+        </div>
         <div class="field">
           <label for="aimMode">Aim with</label>
           <select id="aimMode">
@@ -254,6 +266,19 @@ ul.notes li { max-width: 68ch; }
     </div>
   </section>
 
+  <section class="win" id="qolInfo" hidden>
+    <div class="titlebar"><div class="name"><span class="icon" aria-hidden="true"><b></b><b></b></span><span>With FisterQoL</span></div><div class="tb-btns" aria-hidden="true"><i>_</i><i>□</i><i>×</i></div></div>
+    <div class="panel">
+      <ul class="notes">
+        <li><b>Tap the bookmark as soon as fister.fun opens, before tapping anything on the page.</b> FisterQoL has to hook in before the game starts loading. If you were too late, the bookmark tells you; reload and try again.</li>
+        <li>You get FisterQoL's <b>QoL</b> settings tab, with a <b>VR</b> section for every VR setting, Enter VR, Recenter, VR info and Copy log.</li>
+        <li><b>Clips in VR:</b> while the game records a clip, it records your first-person headset view, and saved clips go to the Discord through the game's normal clip upload. Click the <b>right thumbstick</b> to save a clip (it presses your Save clip key from the game's controls).</li>
+        <li>QoL HUD items show on the floating HUD; low graphics, team outlines, texture packs, skyboxes and custom animations apply in the headset. The FPS limit is ignored in VR and crosshairs are hidden (you aim with your hand).</li>
+        <li>The bookmark is longer than the VR-only one because it carries all of FisterQoL (compressed). Paste the whole thing.</li>
+      </ul>
+    </div>
+  </section>
+
   <section class="win">
     <div class="titlebar"><div class="name"><span class="icon" aria-hidden="true"><b></b><b></b></span><span>Set it up once</span></div><div class="tb-btns" aria-hidden="true"><i>_</i><i>□</i><i>×</i></div></div>
     <div class="panel">
@@ -286,6 +311,7 @@ ul.notes li { max-width: 68ch; }
             <tr><td><span class="hand r">Right</span></td><td>A (hold)</td><td>V: voice chat</td></tr>
             <tr><td><span class="hand l">Left</span></td><td>X</td><td>Space</td></tr>
             <tr><td><span class="hand r">Right</span></td><td>B</td><td>Wake up input if buttons stop working</td></tr>
+            <tr><td><span class="hand r">Right</span></td><td>Thumbstick click</td><td>Save a clip (your Save clip key; needs FisterQoL)</td></tr>
             <tr><td><span class="hand l">Left</span> <span class="hand r">Right</span></td><td>Both grips, hold 1 s</td><td>Open or close the debug console (shows on the menu panel)</td></tr>
           </tbody>
         </table>
@@ -312,7 +338,9 @@ ul.notes li { max-width: 68ch; }
 
 <script>
 const LAYER_SOURCE = __LAYER_SOURCE__;
-const ids = ['aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody'];
+const QOL_PAYLOAD = __QOL_PAYLOAD__;
+__QOL_LOADER__
+const ids = ['bundle', 'applyEach', 'aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody'];
 const codeEl = document.getElementById('code');
 const sizeEl = document.getElementById('size');
 const statusEl = document.getElementById('status');
@@ -342,8 +370,19 @@ function overrides() {
 }
 
 function build() {
-  const prefix = 'globalThis.__fisterVrConfigOverrides=' + JSON.stringify(overrides()) + ';\n';
-  const url = 'javascript:' + encodeURIComponent(prefix + LAYER_SOURCE + '\nvoid 0;');
+  const withQol = document.getElementById('bundle').value === 'qol';
+  document.getElementById('qolOptions').hidden = !withQol;
+  document.getElementById('qolInfo').hidden = !withQol;
+  document.getElementById('bundleNote').textContent = withQol
+    ? 'The VR mod inside FisterQoL __QOL_VERSION__: the QoL settings tab, a VR tab, VR clips that record your headset view, and a controller button to save clips.'
+    : 'Just the VR mod. Small and quick to paste.';
+  let url;
+  if (withQol) {
+    url = 'javascript:' + encodeURIComponent(qolLoader(QOL_PAYLOAD, overrides(), document.getElementById('applyEach').checked));
+  } else {
+    const prefix = 'globalThis.__fisterVrConfigOverrides=' + JSON.stringify(overrides()) + ';\n';
+    url = 'javascript:' + encodeURIComponent(prefix + LAYER_SOURCE + '\nvoid 0;');
+  }
   codeEl.value = url;
   sizeEl.textContent = (url.length / 1024).toFixed(1) + ' KB of text. It\'s long; that\'s expected.';
   statusEl.textContent = 'Settings are built into the copy.';

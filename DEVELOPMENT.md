@@ -106,6 +106,36 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.0: FisterQoL option and VR clips
+
+- **Setup page option "What the bookmark loads":** Fister VR only, or Fister VR + FisterQoL.
+  - `qol/FisterQoL.user.template.js` is the FisterQoL Tampermonkey userscript with `const VR_SOURCE=__FISTER_VR_SOURCE__;`
+    where `tools/build.cjs` puts this layer. Change QoL there; never hand-edit `dist/`.
+  - `qolForBookmarklet()` in the build reformats it for a bookmarklet: no metadata block, `window` = `globalThis`
+    (no `unsafeWindow`), plain `<script>` elements instead of `GM_addElement` (VR layer and the patched game module),
+    no Steam staging path, bookmark wording in the "started too late" message. The build fails if any
+    Tampermonkey-only code is left or a swap anchor stops matching.
+  - The result is gzipped and base64'd (~950 KB -> ~335 KB bookmarklet). `site/qol-loader.js` builds the loader:
+    checks fister.fun home page / already running / game already loading (`__fisterRuntimeBootPromise`,
+    `__fisterRuntimeLoaded`, `#runtime-ui-root[data-loaded=1]`), turns on QoL VR mode, writes the page's VR settings
+    to `fister-vr-config` (every tap, or only when none are saved), then unpacks with `DecompressionStream` and runs
+    it as a `<script>`.
+  - Timing: QoL hooks the game's lazy `__fisterRuntimeBootPromise`, so the bookmark must run before the game starts
+    loading its runtime. Unverified on the real site whether that happens on first tap/click or by itself.
+- **Clip view** (`renderClipView`, `clipFrame`): in VR the canvas doesn't update. While FisterQoL's clip hook asks for
+  frames (`fisterVR.clipFrame()` from `fisterClipOverlays.recordingCanvas`, i.e. while the game records), a
+  first-person view from `state.view`'s world pose (lerp/slerp smoothing) is rendered with XR off into the bottom-left
+  of the canvas and copied to a 2D canvas in the same task. `state.clipRendering` exempts that clear from the
+  black-flash clear blocker. Config: `clipView`, `clipHeight`, `clipFov`, `clipSmoothing`. Nothing renders when not
+  recording.
+- **`'clip'` button action** (default on right stick click): asks `__fisterQolVrBridge.clipInput()` (FisterQoL looks up
+  the game's clip binding in its input bindings) and presses it, with a haptic pulse. Without FisterQoL it only
+  shows a status message.
+- API: `fisterVR.toggle()`, `presenting`, `buttonText`, `copyLog()`, `clipFrame()`, `clipStats()`,
+  `applyButtonVisibility()`; config `showButton`.
+- Tests: `test/run20.cjs` (clip view + clip button), `test/run23.cjs` (setup page QoL option end to end on a
+  stand-in home page, too-late and already-running checks).
+
 ## v0.8.3
 
 - **The in-match panel was never visible on the Quest** (pause menu included). Menu-only VR, which draws with its own WebGL, always worked; the three.js-built panel in the game's scene didn't. The cause is unknown (texture class, the game's render passes, ...). The gray window in earlier videos was the Quest browser's 2D page, not the panel.

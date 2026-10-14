@@ -5,7 +5,7 @@ name: Build
 on:
   push:
     branches: [main]
-    paths: ['src/**', 'site/**', 'tools/**']
+    paths: ['src/**', 'site/**', 'tools/**', 'qol/**']
   workflow_dispatch:
 
 permissions:

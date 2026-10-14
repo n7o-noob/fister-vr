@@ -25,6 +25,8 @@ standalone **Meta Quest 2**. It runs in the Quest Browser, with no PC, SteamVR o
 - **Fixes for VR-specific problems:** outline glow that draws as black boxes, input that stops after focus
   changes, late screen clears that flash black, and one-frame position glitches.
 - **Debug console:** hold both grips for a second in VR, or press VR INFO outside it.
+- **Optional FisterQoL bundle:** the setup page can build a bookmarklet that loads FisterQoL with the VR mod
+  inside it. See [With FisterQoL](#with-fisterqol).
 
 ## Quick start (Quest 2)
 
@@ -53,7 +55,33 @@ Tap the bookmark again after each page reload.
 | Right | Stick left/right | Turn |
 | Right | A (hold) | V (voice chat) |
 | Right | B | Wake input if buttons stop working |
+| Right | Stick click | Save a clip (with FisterQoL: presses your Save clip key) |
 | Both | Grips, hold 1 s | Debug console |
+
+## With FisterQoL
+
+On the setup page, set **What the bookmark loads** to **Fister VR + FisterQoL**. The bookmark then loads
+FisterQoL (reformatted from its Tampermonkey version to run from a bookmark), with the VR mod inside it.
+
+- **Tap the bookmark as soon as fister.fun opens, before tapping anything on the page.** FisterQoL has to hook
+  in before the game starts loading; if it's too late, the bookmark says so and you reload and tap again.
+- You get FisterQoL's **QoL** settings tab. Its **VR** section has every VR setting plus Enter VR, Recenter,
+  VR info and Copy log.
+- **Clips in VR:** in the headset the game's canvas stops updating, so clips would be a frozen frame. While the
+  game records a clip, the mod draws a steadied first-person view from the headset (480p to 1080p, adjustable
+  field of view and smoothing) and hands it to the game's recorder. Saved clips go to the Discord through the
+  game's normal clip upload. **Right stick click** saves a clip with your Save clip key from the game's controls.
+- In VR, FisterQoL ignores its FPS limit (the headset needs every frame) and hides the crosshairs (you aim with
+  your hand). QoL HUD items appear on the floating HUD; low graphics, team outlines, texture packs, skyboxes and
+  custom animations apply in the headset.
+- **Use these VR settings every time** (on by default) re-applies the page's settings on each tap. Turn it off
+  to manage them in QoL > VR instead.
+
+On PC, install [`dist/FisterQoL.user.js`](dist/FisterQoL.user.js) in Tampermonkey instead (document-start) and
+turn on **Settings > QoL > VR > Enable VR mode**. Don't run it together with `fister-vr.user.js`.
+
+The FisterQoL source is in [`qol/`](qol/); third-party licenses for code bundled in it are in
+[`qol/licenses/`](qol/licenses/).
 
 ## PC browsers (Chrome / Edge + SteamVR, Quest Link or Virtual Desktop)
 
@@ -92,7 +120,9 @@ node tools/build.cjs
 ```
 
 This regenerates `docs/index.html` (the setup page), `dist/fister-vr.user.js`, `dist/fister-vr.bookmarklet.txt`
-and `dist/fisterVr.js`. A GitHub Action does the same on every push that touches `src/`, `site/` or `tools/`.
+and `dist/fisterVr.js`, plus the FisterQoL builds: `dist/FisterQoL.user.js`, `dist/fisterqol.bookmarklet.js`
+(readable bookmarklet format) and `dist/fister-vr-qol.bookmarklet.txt` (default settings). A GitHub Action does
+the same on every push that touches `src/`, `site/`, `tools/` or `qol/`.
 See [`test/README.md`](test/README.md) for the stand-in game tests.
 
 ## License

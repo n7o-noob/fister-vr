@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.8.2
+// @version      0.8.3
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.8.2';
+  const VERSION = '0.8.3';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -730,11 +730,20 @@
     const previousTarget = renderer.getRenderTarget();
     if (state.xrTarget && previousTarget !== state.xrTarget) renderer.setRenderTarget(state.xrTarget);
     try {
+      if (state.overlayOk) hideThreeOverlay(true);
       originalRender.call(renderer, scene, state.view);
     } finally {
       if (state.xrTarget && previousTarget !== state.xrTarget) renderer.setRenderTarget(previousTarget);
     }
     state.mainRendered = true;
+    if (renderer.xr.isPresenting) {
+      try { if (drawOverlay(renderer)) state.overlayOk = true; }
+      catch (error) {
+        state.overlayOk = false; hideThreeOverlay(false);
+        try { renderer.resetState(); } catch {}
+        if (!state.overlayFailed) { state.overlayFailed = true; record('error', ['Drawing the panel directly failed; using three.js for it:', error]); }
+      }
+    }
   }
 
   // Grab Three.js constructors from live objects: the game's copy of three.js is a private ES module.
@@ -1548,6 +1557,7 @@
     const entry = aimEntry();
     const show = !!(config.aimLaser && config.aimMode === 'hand' && entry && state.gameplay && !state.ragdoll && !state.uiHit && state.classes && state.classes.Mesh);
     let laser = state.aimLaser;
+    state.aimLineShown = show;
     if (!show) { if (laser) laser.visible = false; return; }
     if (!laser) {
       const g = boxGeometry(0.003, 0.003, 1);
@@ -2219,6 +2229,10 @@
     const attrs = { xrCompatible: true, alpha: false, antialias: true, depth: true };
     const gl = canvas.getContext('webgl2', attrs) || canvas.getContext('webgl', attrs);
     if (!gl) throw new Error('WebGL unavailable');
+    return { canvas, ...overlayProgram(gl) };
+  }
+  // A tiny textured-quad + lines program (no three.js), used for menu-only VR and for the panel/lasers in a match.
+  function overlayProgram(gl) {
     const compile = (type, src) => {
       const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
       if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
@@ -2241,7 +2255,115 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
-    return { canvas, gl, prog, loc, quad, lines, texture };
+    return { gl, prog, loc, quad, lines, texture };
+  }
+
+  // --- panel + lasers drawn straight into the headset frame -------------------------------------------------------
+  // On the Quest the three.js-built panel never showed up in a match (menu-only VR, which draws with plain WebGL,
+  // did). So after the game's headset frame is drawn, draw the panel, menu laser and aim line ourselves, on top, in
+  // the XR reference space (= our rig's space), then let three.js re-sync its GL state.
+  function drawOverlay(renderer) {
+    if (config.overlayGl === false) return false;
+    const xr = renderer.xr;
+    const session = xr.getSession && xr.getSession();
+    const frame = xr.getFrame && xr.getFrame();
+    const space = xr.getReferenceSpace && xr.getReferenceSpace();
+    const layer = session && session.renderState && session.renderState.baseLayer;
+    if (!session || !frame || !space || !layer) return false;
+    const pose = frame.getViewerPose(space);
+    if (!pose) return false;
+    const gl = renderer.getContext();
+    let o = state.overlay;
+    if (!o || o.gl !== gl) o = state.overlay = { ...overlayProgram(gl), uploaded: -1 };
+    const { prog, loc, quad, lines, texture } = o;
+    const menu = state.menu;
+    const scale = state.rig && state.rig.scale.x || 1; // rig units -> reference space metres
+    // Lines: menu laser (to the hit point) and the aim line, from the aim hand's ray.
+    const lineData = [], lineColors = [];
+    const src = [...session.inputSources].find((x) => x.handedness === config.aimHand && x.targetRaySpace);
+    const rp = src && frame.getPose(src.targetRaySpace, space);
+    let dotPos = null;
+    if (rp) {
+      const m = rp.transform.matrix, ox = m[12], oy = m[13], oz = m[14], dx = -m[8], dy = -m[9], dz = -m[10];
+      if (state.uiHit && menu && menu.dot) {
+        const d = menu.dot.position;
+        dotPos = [d.x * scale, d.y * scale, d.z * scale];
+        lineData.push(ox, oy, oz, ...dotPos); lineColors.push([1, 1, 1, 0.85]);
+      } else if (state.aimLineShown) {
+        const len = (state.aimDist || 10) * scale;
+        lineData.push(ox, oy, oz, ox + dx * len, oy + dy * len, oz + dz * len); lineColors.push([1, 0.33, 0.33, 0.6]);
+      }
+    }
+    const drawPanel = !!(menu && menu.panel && config.menu.mode !== 'off');
+    if (!drawPanel && !lineData.length) return true;
+
+    const isGl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    if (isGl2) { gl.bindVertexArray(null); gl.bindSampler(0, null); gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null); }
+    gl.useProgram(prog);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.SCISSOR_TEST); gl.disable(gl.STENCIL_TEST);
+    gl.colorMask(true, true, true, true);
+    gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    if (drawPanel && o.uploaded !== menu.draws) {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, menu.canvas);
+      o.uploaded = menu.draws;
+    }
+    gl.uniform1i(loc.t, 0);
+    // Panel model: its local matrix in rig space, scaled to reference-space metres.
+    let panelModel = null;
+    if (drawPanel) {
+      menu.panel.updateMatrix();
+      const e = menu.panel.matrix.elements;
+      panelModel = new Float32Array(e);
+      for (let i = 0; i < 16; i++) if (i % 4 !== 3) panelModel[i] *= scale; // scale rotation/scale and translation rows
+      panelModel[15] = 1;
+    }
+    if (lineData.length) { gl.bindBuffer(gl.ARRAY_BUFFER, lines); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineData), gl.DYNAMIC_DRAW); }
+    for (const view of pose.views) {
+      const vp = layer.getViewport(view);
+      if (!vp) continue;
+      gl.viewport(vp.x, vp.y, vp.width, vp.height);
+      const vpm = mat4.mul(view.projectionMatrix, view.transform.inverse.matrix);
+      if (panelModel) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+        gl.enableVertexAttribArray(loc.p); gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 20, 0);
+        gl.enableVertexAttribArray(loc.uv); gl.vertexAttribPointer(loc.uv, 2, gl.FLOAT, false, 20, 12);
+        gl.uniformMatrix4fv(loc.mvp, false, mat4.mul(vpm, panelModel));
+        gl.uniform1f(loc.tex, 1); gl.uniform4f(loc.c, 1, 1, 1, 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
+      if (lineData.length) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, lines);
+        gl.enableVertexAttribArray(loc.p); gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 12, 0);
+        gl.disableVertexAttribArray(loc.uv); gl.vertexAttrib2f(loc.uv, 0, 0);
+        gl.uniformMatrix4fv(loc.mvp, false, vpm);
+        gl.uniform1f(loc.tex, 0);
+        lineColors.forEach((c, i) => { gl.uniform4f(loc.c, c[0], c[1], c[2], c[3]); gl.drawArrays(gl.LINES, i * 2, 2); });
+      }
+      if (dotPos) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+        gl.enableVertexAttribArray(loc.p); gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 20, 0);
+        gl.disableVertexAttribArray(loc.uv); gl.vertexAttrib2f(loc.uv, 0, 0);
+        gl.uniformMatrix4fv(loc.mvp, false, mat4.mul(vpm, mat4.trs(dotPos[0], dotPos[1], dotPos[2], menu.yaw || 0, 0.015, 0.015, 1)));
+        gl.uniform1f(loc.tex, 0); gl.uniform4f(loc.c, 1, 1, 1, 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
+    }
+    gl.disableVertexAttribArray(loc.p); gl.disableVertexAttribArray(loc.uv);
+    renderer.resetState();
+    state.overlayDraws = (state.overlayDraws || 0) + 1;
+    return true;
+  }
+  // When we draw them ourselves, hide the three.js versions (they'd double up wherever three does draw them).
+  function hideThreeOverlay(hide) {
+    const menu = state.menu;
+    if (menu && menu.panel) { menu.panel.visible = !hide; if (hide) { menu.dot.visible = false; menu.laser.visible = false; } }
+    if (hide && state.aimLaser) state.aimLaser.visible = false;
   }
 
   async function startStandalone(session) {
@@ -2866,7 +2988,7 @@
       'Players: ' + (state.gameScene ? 'game scene' : state.lateScene ? 'map probe' : 'not found') + (state.reprobe ? ' (re-searching)' : '')
         + ' · local: ' + (player ? 'yes' : 'no'),
       'Aim: ' + config.aimMode + ' · learned ' + (state.aim.ratioX * 1000).toFixed(2) + ' mrad/px' + (state.aim.stuck > 30 ? ' · NOT RESPONDING' : ''),
-      'Menu panel: ' + (state.menu ? 'shown' + (state.menu.hudMap ? ' as HUD (' + state.menu.hudWidgets + ' widgets)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
+      'Menu panel: ' + (state.menu ? (state.overlayOk ? 'drawn directly (' + (state.overlayDraws || 0) + ' frames)' : 'three.js mesh') + (state.menu.hudMap ? ' as HUD (' + state.menu.hudWidgets + ' widgets)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
         + ' · laser: ' + (state.uiHit ? 'on ' + state.uiHit.element.tagName.toLowerCase() : 'off') + ' · mouse captured: ' + (document.pointerLockElement ? 'yes' : 'no'),
       'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
         + ' · game locked ' + describeEl(state.lockTarget) + ' (' + (state.lockRequests || 0) + 'x) · keys held ' + ([...state.keysDown].join(' ') || 'none'),

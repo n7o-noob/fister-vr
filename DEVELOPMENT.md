@@ -106,6 +106,16 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.8.3
+
+- **The in-match panel was never visible on the Quest** (pause menu included). Menu-only VR, which draws with its own WebGL, always worked; the three.js-built panel in the game's scene didn't. The cause is unknown (texture class, the game's render passes, ...). The gray window in earlier videos was the Quest browser's 2D page, not the panel.
+- **`drawOverlay(renderer)`**, called after the main headset render:
+  - It draws the panel texture, the menu laser and dot, and the aim line with `overlayProgram(gl)` on the game's GL context, into `session.renderState.baseLayer.framebuffer`. Positions are in the XR reference space, which is the rig's local space times `rig.scale`.
+  - Afterwards it calls `renderer.resetState()`.
+  - While it works (`state.overlayOk`), the three.js panel, laser, dot and aim-laser meshes are hidden.
+  - If it throws, the mod falls back to the three.js meshes. `config.overlayGl = false` turns it off.
+- The status line shows "drawn directly (N frames)" or "three.js mesh".
+
 ## v0.8.2
 
 - **In-match HUD layout.** Mapping the whole page onto one panel put Fister's HUD (health, style and souls at the top left, scoreboard at the top right) about 30° out, where the Quest's lenses blur. It looked like there was no HUD.

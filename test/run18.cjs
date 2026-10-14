@@ -36,7 +36,7 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
     const fwd = new T.Vector3(0, 0, -1).applyQuaternion(cam.getWorldQuaternion(new T.Quaternion()));
     const laser = s.aimLaser;
     return { aimOffByDeg: +(Math.acos(Math.min(1, want.dot(fwd))) * 180 / Math.PI).toFixed(2), targetDist: +s.aimDist.toFixed(2), groundY: +target.y.toFixed(2),
-      laserOnHand: !!laser && laser.visible && laser.parent === entry.group, laserLength: laser && +laser.scale.z.toFixed(2) };
+      laserOnHand: (!!laser && laser.visible && laser.parent === entry.group) || (!!s.overlayOk && !!s.aimLineShown), laserLength: laser && +laser.scale.z.toFixed(2) };
   }, hand);
   // Right hand pointing 30 degrees left and down at the floor: the aim goes to where the ray meets the ground.
   await page.evaluate(() => { const yaw = 30 * Math.PI / 180, pitch = -25 * Math.PI / 180; __xrMock.setRay('right', [0.25, 1.2, -0.3], [-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)]); });

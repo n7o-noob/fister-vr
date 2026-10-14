@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.7
+// @version      0.9.8
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.7';
+  const VERSION = '0.9.8';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -76,9 +76,11 @@
     // Where the game's aim ray starts. The server (fister-community-server, getChunkThrowVelocity) aims from the
     // player's shoulder: body position + 0.2 (mesh root offset) + 1, along the look yaw/pitch. 'camera' is the old guess.
     aimOrigin: 'shoulder',
-    // Size of every VR panel (menus, main menu, HUD widgets). 1 = the old size. Point at a menu and push the right
-    // stick left/right to change it in the headset.
-    uiScale: 1.4,
+    // Width and height of every VR panel (menus, main menu, HUD), each 1 = the old size. The page is laid out in a
+    // wide, short window, so menus look squashed; a taller panel un-squashes them. In the headset, point at a menu:
+    // right stick left/right = width; hold the right grip + stick up/down = height. (uiScale: old single setting.)
+    uiWidth: 1.4,
+    uiHeight: 1.8,
     // In-match HUD panel (health, style, scoreboard): distance and width in metres, and how far below eye level.
     // pull: how far widgets are moved in toward the centre of view (1 = where the page has them, 0 = all in the middle);
     // grow: how much bigger they're drawn.
@@ -2081,7 +2083,7 @@
       out.setTransform(1, 0, 0, 1, 0, 0);
       out.globalAlpha = 1;
       out.clearRect(0, 0, W, H);
-      const pull = Math.max(0.15, Math.min(1, (Number(config.hud.pull) || 0.5) / uiScale())), grow = Math.max(0.5, Math.min(3, Number(config.hud.grow) || 1.4));
+      const pull = Math.max(0.15, Math.min(1, (Number(config.hud.pull) || 0.5) / Math.max(uiW(), uiH()))), grow = Math.max(0.5, Math.min(3, Number(config.hud.grow) || 1.4));
       const cx0 = innerWidth / 2, cy0 = innerHeight / 2, map = [];
       for (const r of widgets) {
         const w = r.w * grow, h = r.h * grow;
@@ -2144,9 +2146,10 @@
       }
     }
     const d = hud ? (Number(config.hud.distance) || 1.6) : (Number(config.menu.distance) || 1.4);
-    const w = (hud ? (Number(config.hud.width) || 2.0) : (Number(config.menu.width) || 1.6)) * uiScale();
+    const base = hud ? (Number(config.hud.width) || 2.0) : (Number(config.menu.width) || 1.6);
+    const w = base * uiW(), h = base * menu.aspect * uiH();
     const panel = menu.panel;
-    panel.scale.set(w, w * menu.aspect, 1);
+    panel.scale.set(w, h, 1);
     const drop = hud ? (Number(config.hud.drop) || 0) : (Number(config.menu.drop) || 0.15);
     panel.position.set(head.x - Math.sin(menu.yaw) * d, head.y - drop, head.z - Math.cos(menu.yaw) * d);
     panel.rotation.set(hud ? 0 : -(Number(config.menu.tiltDeg) || 8) * Math.PI / 180, menu.yaw, 0, 'YXZ');
@@ -2600,7 +2603,7 @@
     if (Math.abs(diff) > (Number(config.menu.followDeg) || 35) * Math.PI / 180) menu.catching = true;
     if (menu.catching) { menu.yaw += diff * 0.12; if (Math.abs(diff) < 0.05) menu.catching = false; }
     if (sa.floorY === null) sa.floorY = hp.y - 1.6;
-    const d = Number(config.menu.distance) || 1.4, w = (Number(config.menu.width) || 1.6) * uiScale(), h = w * menu.aspect;
+    const d = Number(config.menu.distance) || 1.4, w = (Number(config.menu.width) || 1.6) * uiW(), h = (Number(config.menu.width) || 1.6) * menu.aspect * uiH();
     const cx = hp.x - Math.sin(menu.yaw) * d, cy = hp.y - (Number(config.menu.drop) || 0.15), cz = hp.z - Math.cos(menu.yaw) * d;
 
     // Laser from the right controller.
@@ -2852,6 +2855,11 @@
       if (!down && state.triggerToUi) { state.triggerToUi = false; if (!state.selectReleased && state.uiPress) uiPress(false); state.selectReleased = false; return; }
       if (down ? state.uiHit : state.uiPress) { state.triggerToUi = down; uiPress(down); return; }
     }
+    // Aim-hand grip while pointing at a menu is for resizing it: don't send it to the game.
+    if (hand === config.aimHand && action.mouse === 2) {
+      if (down && state.uiHit) { state.gripToUi = true; return; }
+      if (!down && state.gripToUi) { state.gripToUi = false; return; }
+    }
     // Escape opens the game's pause menu, which many games do when the pointer is released.
     if (action.key === 'Escape' && down && config.spoofPointerLock && state.presenting) {
       state.pointerLockReleased = !state.pointerLockReleased;
@@ -2874,16 +2882,17 @@
   }
 
   // Short message at the top of the screen. It's part of the page, so it also shows on the floating HUD in the headset.
-  function uiScale() { return Math.max(0.5, Math.min(3, Number(config.uiScale) || 1)); }
-  // Point at a menu and push the right stick left/right: smaller/bigger. Saved for next time.
-  function resizeUi(amount) {
-    const next = Math.round(Math.max(0.5, Math.min(3, uiScale() * (1 + amount))) * 100) / 100;
-    if (next === config.uiScale) return;
-    config.uiScale = next;
-    if (state.menu) { state.menu.dirty = true; state.menu.lastDraw = 0; }
-    if (state.standalone && state.standalone.menu) state.standalone.menu.dirty = true;
+  const uiDim = (v) => Math.max(0.5, Math.min(4, Number(v) || Number(config.uiScale) || 1.4));
+  function uiW() { return uiDim(config.uiWidth); }
+  function uiH() { return uiDim(config.uiHeight); }
+  // Point at a menu: right stick left/right = narrower/wider; with the right grip held, up/down = taller/shorter.
+  function resizeUi(key, amount) {
+    const now = key === 'uiWidth' ? uiW() : uiH();
+    const next = Math.round(Math.max(0.5, Math.min(4, now * (1 + amount))) * 100) / 100;
+    if (next === now) return;
+    config[key] = next;
     clearTimeout(state.uiSaveTimer);
-    state.uiSaveTimer = setTimeout(() => { saveConfig(); toast('VR UI size ' + Math.round(uiScale() * 100) + '%'); }, 400);
+    state.uiSaveTimer = setTimeout(() => { saveConfig(); toast('VR menu width ' + Math.round(uiW() * 100) + '% · height ' + Math.round(uiH() * 100) + '%'); }, 400);
   }
   function toast(text) {
     whenBody(() => {
@@ -2959,7 +2968,9 @@
       if (hand === config.aimHand) scroll = sy;
     }
     // Point at the menu and push the right stick up/down to scroll.
-    if (state.uiHit && Math.abs(scroll) > 0.3) uiScroll(scroll * 30);
+    const gripHeld = !!state.buttonsDown.get(config.aimHand + '.squeeze');
+    if ((state.uiHit || state.uiResizing) && gripHeld && Math.abs(scroll) > 0.35) { state.uiResizing = true; resizeUi('uiHeight', -scroll * 0.005); }
+    else if (state.uiHit && Math.abs(scroll) > 0.3) uiScroll(scroll * 30);
     // Hold both grips for one second: open/close the debug console (it appears on the menu panel).
     const both = state.buttonsDown.get('left.squeeze') && state.buttonsDown.get('right.squeeze');
     const nowMs = performance.now();
@@ -2979,9 +2990,9 @@
     if (turn !== null && (state.uiHit || state.uiResizing) && Math.abs(turn) > 0.35) {
       // Pointing at a menu: the turn stick resizes the panels instead of turning you.
       state.uiResizing = true;
-      resizeUi(turn * 0.005);
+      resizeUi('uiWidth', turn * 0.005);
       turn = null;
-    } else if (state.uiResizing && (turn === null || Math.abs(turn) < 0.2)) state.uiResizing = false;
+    } else if (state.uiResizing && (turn === null || Math.abs(turn) < 0.2) && !(gripHeld && Math.abs(scroll) > 0.2)) state.uiResizing = false;
     if (turn !== null && config.turnMode !== 'off' && viewTurn) {
       if (config.turnMode === 'smooth') {
         if (Math.abs(turn) > 0.15) state.rigTurn -= turn * 0.035;

@@ -106,6 +106,18 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.8: separate VR menu width and height
+
+- User clarification on 0.9.7: "I meant the height and width, not actual size". The Quest Browser lays the page out in a wide, short window (1280x587), so menus look squashed.
+- `uiWidth` (default 1.4) and `uiHeight` (default 1.8) replace `uiScale`, which is still read as a fallback.
+  - The panel is `base * uiWidth` wide and `base * aspect * uiHeight` tall, for the game-renderer panel, menu-only VR and the HUD.
+  - HUD `pull` is divided by the larger of the two.
+- Setup page: "VR menu width" (1 / 1.4 / 1.8 / 2.3) and "VR menu height" (1 / 1.4 / 1.8 / 2.3 / 2.8).
+- In VR, pointing at a menu:
+  - right stick left/right changes the width;
+  - right grip held + stick up/down changes the height (no scrolling while the grip is held).
+  - The aim-hand grip pressed on a menu is not sent to the game as a right click (`gripToUi`).
+
 ## v0.9.7: VR UI size
 
 - User: "all UIs are condensed, way too small".

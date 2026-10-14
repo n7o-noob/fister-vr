@@ -49,8 +49,10 @@ class Game {
     this.players.set('me', new Player('me', this.scene));
     const other = new Player('bot', this.scene); other.mesh.position.set(3, 0, -4); this.players.set('bot', other);
     this.yaw = 0; this.pitch = 0; this.sens = 0.0031; this.keys = new Set(); this.paused = false; this.frames = 0; this.respawns = 0;
-    document.addEventListener('mousemove', (e) => { if (this.paused) return; if (this.requireLock && document.pointerLockElement !== this.renderer.domElement) return; this.yaw -= e.movementX * this.sens; this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch - e.movementY * this.sens)); });
-    window.addEventListener('keydown', (e) => { if (!this.paused) this.keys.add(e.code); });
+    this.lockEl = () => (location.search.includes('lockbody') ? document.body : this.renderer.domElement);
+    const typing = () => { const a = document.activeElement; return !!a && (a.tagName === 'INPUT' && a.type === 'text'); };
+    document.addEventListener('mousemove', (e) => { if (this.paused || typing()) return; if (this.requireLock && document.pointerLockElement !== this.lockEl()) return; this.yaw -= e.movementX * this.sens; this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch - e.movementY * this.sens)); });
+    window.addEventListener('keydown', (e) => { if (!this.paused && !typing()) this.keys.add(e.code); });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     // The bug the user hit: losing focus clears input and ignores it until the window is focused again.
     window.addEventListener('blur', () => { this.paused = true; this.keys.clear(); });

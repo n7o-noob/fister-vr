@@ -20,6 +20,7 @@
   window.__xrMock = {
     sessions: 0, frames: 0,
     setRay(hand, o, d) { rays[hand] = rayMatrix(o, d); },
+    setAxes(hand, axes) { const s = sources.find(x => x.handedness === hand); axes.forEach((v, i) => { s.gamepad.axes[i] = v; }); },
     press(hand, index, on) { const s = sources.find(x => x.handedness === hand); s.gamepad.buttons[index].pressed = on; s.gamepad.buttons[index].value = on ? 1 : 0; if (index === 0 && window.__xrMock.session) { const e = new Event(on ? 'selectstart' : 'selectend'); e.inputSource = s; window.__xrMock.session.dispatchEvent(e); if (!on) { const e2 = new Event('select'); e2.inputSource = s; window.__xrMock.session.dispatchEvent(e2); } } },
   };
   class FakeLayer {

@@ -106,12 +106,18 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
-## Status / open items (as of v0.7.6)
+## Status / open items (as of v0.7.7)
 
-- v0.7.6 targets three problems:
-  - the missing panel and boxes when entering VR from the main menu
-  - lobby and join buttons not responding
-  - the game not loading unless the page was visible
-- None of these fixes is verified on a real Quest yet. They're only verified against the stand-in games.
-- The user said "a few things are missing" from the VR menu, with no specifics yet. Ask for the debug console **Copy all** output and screenshots of the flat menu vs. the VR panel.
-- Testing is mock-only. Real behavior must come from the user's reports.
+- v0.7.7 fixes, found from a Quest video:
+  - **Hands and aim dead after starting from the main menu.** three.js only tracks controllers it saw arrive through `inputsourceschange`, and after the menu-only hand-off they had already arrived. `adoptControllers` now replays that event once per session.
+  - **Pointer lock.** The spoofed lock reports the element the game actually asked to lock (`state.lockTarget`), not always the canvas. It is also active in menu-only VR.
+  - **Focused text boxes.** A text box left focused after a menu click (name, lobby code, chat) would swallow W/A/S/D. It is released on entering gameplay.
+  - **Clicks.** The trigger now ends with a `click` event.
+- Debug console:
+  - It is anchored to the top of the page; on the Quest its buttons were off-screen.
+  - There are Copy all buttons at the top and bottom, plus COPY LOG next to VR INFO.
+  - If the clipboard is blocked, the report appears in a selected text box.
+  - A new "Input:" line shows where keys go, the focused element, the lock target and the keys held.
+- HUD repaint in a match is rarer (the Quest measured about 67 ms per paint).
+- The Quest ran at about 13 fps (77 ms frames, only 8 ms of it the mod's own work). If that persists, try a lower framebufferScale.
+- Not yet verified on a real Quest. The next report should include COPY LOG output.

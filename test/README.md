@@ -16,3 +16,4 @@ They are for development only. To run them:
 - `node test/run13.cjs`: menu-only VR before the game renders, then hand-off to the game (uses `xr-mock.js`, a fake WebXR headset).
 - `node test/run14.cjs`: normal VR session through three.js's real XR code, including hand aim.
 - `node test/run15.cjs`: main menu with no 3D objects (menu-only VR), clicks through WebXR select events, timers, then the panel and controller boxes appearing in the match.
+- `node test/run16.cjs`: enter VR from the main menu, game captures the mouse on `<body>`, a text box left focused: movement and hand aim must still reach the game after the hand-off; console Copy all.

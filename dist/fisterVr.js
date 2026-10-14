@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.7.6
+// @version      0.7.7
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,6 +29,7 @@
 
 (() => {
   'use strict';
+  const VERSION = '0.7.7';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -681,6 +682,7 @@
     }
     if (gameplay !== !!state.gameplay) log(gameplay ? 'Entered gameplay view.' : 'Left gameplay view: ' + state.gameplayReason + '.');
     if (gameplay) state.gameCamera = camera;
+    if (gameplay && !state.gameplay) safe('text focus', releaseTextFocus);
     state.gameplay = gameplay;
     // Ragdolled: hand the camera back to the game's normal third-person view until you get up.
     const ragdoll = gameplay && !!safe('ragdoll check', () => isRagdolled(localPlayer()));
@@ -1656,8 +1658,9 @@
     const now = performance.now();
     // Redraw: on change (capped), at least once a second for things that animate without DOM changes.
     // Adaptive: never spend more than ~8% of the time painting (a 4 ms paint allows ~12/s, a 15 ms paint ~5/s).
-    const minGap = Math.max(1000 / Math.max(1, Number(config.menu.maxFps) || 12), (menu.drawMs || 0) * 12);
-    if ((menu.dirty && now - menu.lastDraw > minGap) || now - menu.lastDraw > 1000) {
+    const inMatch = state.gameplay && !state.uiHit && !state.pointerLockReleased;
+    const minGap = Math.max(1000 / Math.max(1, Number(config.menu.maxFps) || 12), (menu.drawMs || 0) * (inMatch ? 25 : 12));
+    if ((menu.dirty && now - menu.lastDraw > minGap) || now - menu.lastDraw > (inMatch ? 3000 : 1000)) {
       menu.dirty = false;
       menu.lastDraw = now;
       const t0 = performance.now();
@@ -1813,6 +1816,8 @@
   const nativeRequestPointerLock = Element.prototype.requestPointerLock;
   if (nativeRequestPointerLock) {
     Element.prototype.requestPointerLock = function requestPointerLock(...args) {
+      state.lockTarget = this;
+      state.lockRequests = (state.lockRequests || 0) + 1;
       if (state.presenting && config.spoofPointerLock) {
         state.pointerLockReleased = false;
         setTimeout(() => document.dispatchEvent(new Event('pointerlockchange')), 0);
@@ -1821,14 +1826,24 @@
       return nativeRequestPointerLock.apply(this, args);
     };
   }
+  document.addEventListener('pointerlockchange', () => {
+    const real = pointerLockDescriptor && pointerLockDescriptor.get.call(document);
+    if (real) state.lockTarget = real;
+  }, true);
+  try { const real = pointerLockDescriptor && pointerLockDescriptor.get.call(document); if (real) state.lockTarget = real; } catch {}
   function spoofPointerLock(on) {
     if (!pointerLockDescriptor || !config.spoofPointerLock) return;
+    if (on === state.lockSpoofed) { if (on) document.dispatchEvent(new Event('pointerlockchange')); return; }
+    state.lockSpoofed = on;
     if (on) {
       Object.defineProperty(Document.prototype, 'pointerLockElement', {
         configurable: true, enumerable: true,
         get() {
           const real = pointerLockDescriptor.get.call(this);
-          return real || (state.presenting && state.renderer && !state.pointerLockReleased ? state.renderer.domElement : null);
+          if (real || !state.presenting || state.pointerLockReleased) return real || null;
+          // The element the game asked to lock (it may compare against it), else the game canvas.
+          if (state.lockTarget && state.lockTarget.isConnected) return state.lockTarget;
+          return state.renderer && state.renderer.domElement ? state.renderer.domElement : null;
         },
       });
       document.dispatchEvent(new Event('pointerlockchange'));
@@ -1905,6 +1920,8 @@
     state.presenting = true;
     state.redirectRaf = true;
     spoofFocus(true);
+    state.pointerLockReleased = false;
+    spoofPointerLock(true);
     try { state.menuObserver2 = new MutationObserver(() => { menu.dirty = true; }); state.menuObserver2.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {}
     session.addEventListener('end', () => endStandalone(sa));
     attachSelectEvents(session);
@@ -1922,6 +1939,7 @@
     state.redirectRaf = false;
     state.uiHit = null;
     spoofFocus(false);
+    spoofPointerLock(false);
     if (state.menuObserver2) { try { state.menuObserver2.disconnect(); } catch {} state.menuObserver2 = null; }
     const queue = state.rafQueue;
     state.rafQueue = new Map();
@@ -2098,6 +2116,7 @@
     if (!state.presenting) return;
     const ae = document.activeElement;
     if (ae && ae !== document.body && (isOurs(ae) || ae.tagName === 'BUTTON')) { try { ae.blur(); } catch {} }
+    if (state.gameplay) releaseTextFocus();
     window.dispatchEvent(new FocusEvent('focus'));
     document.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     document.dispatchEvent(new Event('visibilitychange'));
@@ -2124,10 +2143,25 @@
     return KEY_CODES[code] || 0;
   }
 
+  const isTextField = (el) => !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable));
   function keyTarget() {
     const ae = document.activeElement;
     if (!ae || ae === document.body || ae === document.documentElement || isOurs(ae) || ae.tagName === 'BUTTON') return document.body || document;
+    if (state.gameplay && isTextField(ae)) return document.body || document;
     return ae;
+  }
+  // A menu click (name box, lobby code, chat) can leave a text field focused. In a match that swallows W/A/S/D, and
+  // many games ignore the mouse while you're typing. There's no keyboard in the headset, so let go of it.
+  function releaseTextFocus() {
+    const ae = document.activeElement;
+    if (!isTextField(ae) || isOurs(ae) || (ae.closest && ae.closest('#fister-vr-info'))) return;
+    try { ae.blur(); } catch {}
+    log('Let go of a focused text box (' + describeEl(ae) + ') so movement keys reach the game.');
+  }
+  function describeEl(el) {
+    if (!el) return 'none';
+    if (el === document.body) return 'page';
+    return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : '');
   }
 
   function dispatchKey(code, down) {
@@ -2158,6 +2192,7 @@
       clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
     target.dispatchEvent(new PointerEvent(down ? 'pointerdown' : 'pointerup', { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
     target.dispatchEvent(new MouseEvent(down ? 'mousedown' : 'mouseup', init));
+    if (!down && button === 0) target.dispatchEvent(new MouseEvent('click', init));
   }
 
   function sendMouseMove(dx, dy = 0) {
@@ -2211,6 +2246,18 @@
   function adoptControllers(session) {
     if (!session || !state.controllers.length) return;
     const sources = [...session.inputSources].filter((src) => src.targetRayMode === 'tracked-pointer' || src.gamepad);
+    // three.js only tracks controllers it saw arrive ('inputsourceschange'). After the menu-only view hands the session
+    // over, they had already arrived, so three never moves them: no hands, no aim. Replay the arrival for three.
+    if (session.__fisterVrReplayed !== session && sources.length && state.controllers.some((c) => !c.source)) {
+      session.__fisterVrReplayed = session;
+      try {
+        const event = new Event('inputsourceschange');
+        event.added = [...session.inputSources];
+        event.removed = [];
+        session.dispatchEvent(event);
+        log('Re-announced ' + sources.length + ' controller(s) to the game renderer.');
+      } catch (error) { record('error', ['Controller replay failed:', error]); }
+    }
     for (const entry of state.controllers) {
       if (entry.source) continue;
       const src = sources[entry.index];
@@ -2392,6 +2439,13 @@
     info.style.position = 'static';
     info.onclick = () => { toggleInfoPanel(); info.blur(); };
     bar.appendChild(info);
+    const copy = document.createElement('button');
+    copy.id = 'fister-vr-copy-button';
+    copy.textContent = 'COPY LOG';
+    styleButton(copy);
+    copy.style.position = 'static';
+    copy.onclick = () => { copyReport(copy, document.getElementById('fister-vr-info')); copy.blur(); };
+    bar.appendChild(copy);
 
     const unsupported = (text) => {
       button.textContent = text;
@@ -2470,6 +2524,8 @@
       'Aim: ' + config.aimMode + ' · learned ' + (state.aim.ratioX * 1000).toFixed(2) + ' mrad/px' + (state.aim.stuck > 30 ? ' · NOT RESPONDING' : ''),
       'Menu panel: ' + (state.menu ? 'shown · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
         + ' · laser: ' + (state.uiHit ? 'on ' + state.uiHit.element.tagName.toLowerCase() : 'off') + ' · mouse captured: ' + (document.pointerLockElement ? 'yes' : 'no'),
+      'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
+        + ' · game locked ' + describeEl(state.lockTarget) + ' (' + (state.lockRequests || 0) + 'x) · keys held ' + ([...state.keysDown].join(' ') || 'none'),
       'Frame: ' + (state.frameMs ? state.frameMs.toFixed(1) + ' ms' : '-') + ' · mod work ' + (state.modMs || 0).toFixed(1) + ' ms · repeated frames ' + (state.repeats || 0) + ' · blocked late clears ' + (state.blockedClears || 0) + ' · position glitches ' + (state.glitches || 0),
       'Feature errors: ' + errors,
     ];
@@ -2481,7 +2537,7 @@
     if (old) old.remove();
     const panel = document.createElement('div');
     panel.id = 'fister-vr-info';
-    panel.style.cssText = 'position:fixed;left:16px;right:16px;bottom:64px;max-width:860px;z-index:2147483647;'
+    panel.style.cssText = 'position:fixed;left:16px;right:16px;top:12px;max-height:calc(100vh - 80px);overflow:auto;max-width:860px;z-index:2147483647;'
       + 'background:rgba(8,12,16,.94);color:#e8eef2;border:1px solid #6b7c8a;border-radius:8px;padding:10px;'
       + 'font:13px/1.35 ui-monospace,Consolas,monospace;display:flex;flex-direction:column;gap:8px;';
     const btn = (label, onClick) => {
@@ -2496,7 +2552,7 @@
     const summary = document.createElement('div');
     summary.style.cssText = 'white-space:pre-wrap;color:#cfe8d0;border-bottom:1px solid #33444f;padding-bottom:6px;';
     const body = document.createElement('div');
-    body.style.cssText = 'height:300px;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;';
+    body.style.cssText = 'height:min(300px,40vh);overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;';
     let tab = forceTab || 'console';
 
     const renderConsole = () => {
@@ -2540,20 +2596,14 @@
     };
     input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') run(); });
     input.addEventListener('keyup', (e) => e.stopPropagation());
-    runRow.append(input, btn('Run', run));
+    runRow.append(input, btn('Run', run), btn('Copy all', (b) => copyReport(b, panel)));
 
     const refresh = () => {
       summary.textContent = liveSummary().join('\n');
       if (tab === 'console') renderConsole(); else renderStatus();
     };
     const setTab = (name) => { tab = name; refresh(); };
-    const copyAll = (b) => {
-      const text = liveSummary().join('\n') + '\\n\\n' + JSON.stringify(root.fisterVR.dump(), null, 1) + '\\n\\nLOG\\n'
-        + logBuffer.map((e) => (e.t / 1000).toFixed(1) + ' ' + e.level + (e.count > 1 ? ' (' + e.count + 'x)' : '') + ' ' + e.msg).join('\n');
-      const done = () => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy all'; }, 1500); };
-      const fallback = () => { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); } catch {} t.remove(); done(); };
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
-    };
+    const copyAll = (b) => copyReport(b, panel);
     tabsRow.append(
       btn('Console', () => setTab('console')),
       btn('Status', () => setTab('status')),
@@ -2569,6 +2619,38 @@
     logListener = () => { if (!pending) { pending = true; setTimeout(() => { pending = false; if (panel.isConnected) refresh(); }, 250); } };
     const tick = () => { if (!panel.isConnected) return; refresh(); setTimeout(tick, 1000); };
     tick();
+  }
+
+  function reportText() {
+    let dump = '';
+    try { dump = JSON.stringify(root.fisterVR.dump(), null, 1); } catch (error) { dump = 'dump failed: ' + error; }
+    return 'Fister VR ' + VERSION + ' report\n' + liveSummary().join('\n') + '\n\nLOG\n'
+      + logBuffer.map((e) => (e.t / 1000).toFixed(1) + ' ' + e.level + (e.count > 1 ? ' (' + e.count + 'x)' : '') + ' ' + e.msg).join('\n')
+      + '\n\nDETAILS\n' + dump;
+  }
+  // Copy the whole report. If the browser refuses the clipboard, show it in a box, already selected, to copy by hand.
+  function copyReport(button, host) {
+    const text = reportText();
+    const label = button ? button.textContent : '';
+    const done = (ok) => { if (button) { button.textContent = ok ? 'Copied!' : 'Copy failed'; setTimeout(() => { button.textContent = label; }, 1800); } };
+    const showBox = () => {
+      let box = document.getElementById('fister-vr-copybox');
+      if (!box) {
+        box = document.createElement('textarea');
+        box.id = 'fister-vr-copybox';
+        box.readOnly = true;
+        box.style.cssText = 'width:100%;height:160px;box-sizing:border-box;font:12px ui-monospace,monospace;background:#0d1419;color:#fff;border:1px solid #6b7c8a;border-radius:5px;';
+        (host || document.body).appendChild(box);
+      }
+      box.value = text;
+      box.focus(); box.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch {}
+      done(ok);
+      if (!ok) log('Copy blocked by the browser: the report is in the box below the console, selected. Long-press it and choose Copy.');
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => done(true), showBox);
+    else showBox();
   }
 
   function setStatus(text) {
@@ -2603,7 +2685,7 @@
     // Paste the output of this to get exact game hook names wired in.
     dump() {
       const gs = gameScene();
-      const out = { version: '0.7.6', userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
+      const out = { version: VERSION, userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
         gameSceneCaptured: !!state.gameScene, playersFound: !!(gs && gs.players), localPlayerFound: !!localPlayer(),
         renderers: state.renderers.size, camerasSeen: state.cameraStats.size,
         menuPanel: state.menu ? { draws: state.menu.draws, elements: state.menu.nodes, msPerDraw: +state.menu.drawMs.toFixed(1) } : (state.menuProblem || 'not built yet'),
@@ -2631,5 +2713,5 @@
   });
 
   whenBody(ensureVrButton); // available right away, even before the game draws anything 3D
-  log('v0.7.6 loaded.');
+  log('v' + VERSION + ' loaded.');
 })();

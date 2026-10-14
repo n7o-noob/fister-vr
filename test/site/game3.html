@@ -30,6 +30,7 @@ body{margin:0;background:#000;overflow:hidden;font-family:Tahoma,Arial,sans-seri
 <div id="pause">
   <div class="win" id="menu"><div class="title">Paused</div><button id="resume">Resume</button><button id="openSettings">Settings</button></div>
   <div class="win" id="settings"><div class="title">Settings</div>
+    <label>Name <input id="name" type="text" value="n7o"></label>
     <label>Volume <input id="vol" type="range" min="0" max="100" value="20" style="width:200px"></label>
     <label><input id="fpsbox" type="checkbox"> Show FPS</label>
     <label>Quality <select id="quality"><option>Low</option><option selected>Medium</option><option>High</option></select></label>
@@ -44,10 +45,10 @@ body{margin:0;background:#000;overflow:hidden;font-family:Tahoma,Arial,sans-seri
   const list = document.getElementById('list'); list.innerHTML = Array.from({ length: 20 }, (_, i) => '<div>Keybind row ' + (i + 1) + '</div>').join('');
   g.ui = { settingsOpened: 0, resumed: 0, volume: 20, fps: false, quality: 'Medium' };
   document.addEventListener('pointerlockchange', () => {
-    const locked = document.pointerLockElement === g.renderer.domElement;
+    const locked = document.pointerLockElement === g.lockEl();
     pause.classList.toggle('visible', !locked);
   });
-  document.getElementById('resume').onclick = () => { g.ui.resumed++; g.renderer.domElement.requestPointerLock(); };
+  document.getElementById('resume').onclick = () => { g.ui.resumed++; g.lockEl().requestPointerLock(); };
   document.getElementById('openSettings').onclick = () => { g.ui.settingsOpened++; settings.classList.add('visible'); };
   document.getElementById('closeSettings').onclick = () => settings.classList.remove('visible');
   document.getElementById('vol').addEventListener('input', (e) => { g.ui.volume = Number(e.target.value); });

@@ -106,6 +106,18 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.6: in-round HUD on Quest (projection layers), shoulder aim
+
+- **Why 0.8.3's direct drawing couldn't work on the Quest.** three.js uses an `XRProjectionLayer` (WebXR Layers) whenever `XRWebGLBinding.prototype.createProjectionLayer` exists, which it does in the Quest Browser. `drawOverlay` only knew `session.renderState.baseLayer` (an XRWebGLLayer), so it returned early and the mod fell back to the three.js panel mesh, which never shows on the Quest.
+  - Now it takes `renderer.xr.getBaseLayer()`. For a projection layer it attaches each view's `binding.getViewSubImage(layer, view).colorTexture` (or a texture-array slice) to its own framebuffer and draws into `sub.viewport`.
+  - The status line shows "drawn directly (N frames, projection layer | WebGL layer)", or "three.js mesh (direct: reason)".
+- **Mock.** `xr-mock.js` can offer layers (`window.__xrMockLayers = true`): a side-by-side projection layer texture, plus `__xrMock.layerImage()` to read it back. Test: `run27.cjs`.
+  - In the mock, the three.js panel mesh also shows inside the projection layer, so why it doesn't show on the Quest is still unknown. The direct drawing avoids the question.
+- **Aim origin is the shoulder**, from the uploaded `fister-community-server` (`dist/shared/gameplay/GameWorld.js` `getChunkThrowVelocity`, `laserbeamGeometry.js`).
+  - The server aims from `body + (0, PLAYER_MESH_ROOT_Y_OFFSET 0.2 + LASERBEAM_LOCAL_SHOULDER_HEIGHT 1, 0)` + 0.2 forward, along `getLaserbeamAimBasis(lookYaw, lookPitch)`, with ray convergence at 24 m (36 m in tank mode).
+  - The mod uses `player.mesh.localToWorld(0, 1, 0)`. `aimOrigin: 'camera'` keeps the 0.8.1 behaviour.
+- **What the community-server zip is.** It's the server plus the shared gameplay code: player sim, items, maps. It has no client rendering, DOM or HUD code, so it can't show how the HUD is built.
+
 ## v0.9.5: Save clip key setting
 
 - Quest report on 0.9.4: the clip view worked ("recording the headset view at 1376x720", clip recording on), but

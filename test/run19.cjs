@@ -32,7 +32,7 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
     const o = entry.group.getWorldPosition(new T.Vector3()), q = entry.group.getWorldQuaternion(new T.Quaternion());
     const d = new T.Vector3(0, 0, -1).applyQuaternion(q);
     const target = o.clone().addScaledVector(d, s.aimDist * (s.rig.scale.x || 1));
-    const from = cam.getWorldPosition(new T.Vector3());
+    const from = game.players.get('me').mesh.localToWorld(new T.Vector3(0, 1, 0));
     const want = target.clone().sub(from).normalize();
     const fwd = new T.Vector3(0, 0, -1).applyQuaternion(cam.getWorldQuaternion(new T.Quaternion()));
     return { crosshairOffByDeg: +(Math.acos(Math.min(1, want.dot(fwd))) * 180 / Math.PI).toFixed(2), targetDist: +s.aimDist.toFixed(2), target: [target.x, target.y, target.z].map(n => +n.toFixed(2)), camDistFromHead: +from.distanceTo(game.players.get('me').head.getWorldPosition(new T.Vector3())).toFixed(1) };

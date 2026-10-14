@@ -31,7 +31,7 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
     const o = entry.group.getWorldPosition(new T.Vector3()), q = entry.group.getWorldQuaternion(new T.Quaternion());
     const d = new T.Vector3(0, 0, -1).applyQuaternion(q);
     const target = o.clone().addScaledVector(d, s.aimDist * (s.rig.scale.x || 1));
-    const head = game.players.get('me').head.getWorldPosition(new T.Vector3());
+    const head = game.players.get('me').mesh.localToWorld(new T.Vector3(0, 1, 0));
     const want = target.clone().sub(head).normalize();
     const fwd = new T.Vector3(0, 0, -1).applyQuaternion(cam.getWorldQuaternion(new T.Quaternion()));
     const laser = s.aimLaser;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.5
+// @version      0.9.6
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.5';
+  const VERSION = '0.9.6';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -73,8 +73,9 @@
     // where the ray meets the ground, or this many metres out. A line from the hand shows that ray.
     aimDistance: 10,
     aimLaser: true,
-    // Where the game's aim ray starts: 'camera' (its third-person camera's crosshair, Fister's default) or 'body'.
-    aimOrigin: 'camera',
+    // Where the game's aim ray starts. The server (fister-community-server, getChunkThrowVelocity) aims from the
+    // player's shoulder: body position + 0.2 (mesh root offset) + 1, along the look yaw/pitch. 'camera' is the old guess.
+    aimOrigin: 'shoulder',
     // In-match HUD panel (health, style, scoreboard): distance and width in metres, and how far below eye level.
     // pull: how far widgets are moved in toward the centre of view (1 = where the page has them, 0 = all in the middle);
     // grow: how much bigger they're drawn.
@@ -1689,8 +1690,11 @@
     const target = aimTarget(entry);
     // Direction from your body (where the game's aim starts) to the spot your hand points at.
     const player = localPlayer();
-    const from = config.aimOrigin === 'body' && player && player.head && player.head.isObject3D
-      ? player.head.getWorldPosition(tmp.v4) : gameCamera.getWorldPosition(tmp.v4);
+    let from;
+    if (config.aimOrigin !== 'camera' && player && player.mesh && player.mesh.isObject3D) {
+      // Mesh root sits at body + 0.2; the shoulder is 1 unit above it (in the mesh's own scale).
+      from = player.mesh.localToWorld(tmp.v4.set(0, 1, 0));
+    } else from = gameCamera.getWorldPosition(tmp.v4);
     tmp.v3.subVectors(target, from);
     if (tmp.v3.lengthSq() < 1e-6) { entry.group.getWorldQuaternion(tmp.q3); tmp.v3.set(0, 0, -1).applyQuaternion(tmp.q3); }
     tmp.v3.normalize();
@@ -2376,10 +2380,14 @@
     const session = xr.getSession && xr.getSession();
     const frame = xr.getFrame && xr.getFrame();
     const space = xr.getReferenceSpace && xr.getReferenceSpace();
-    const layer = session && session.renderState && session.renderState.baseLayer;
-    if (!session || !frame || !space || !layer) return false;
+    // three.js draws into a projection layer (WebXR Layers; the Quest Browser has them) or an XRWebGLLayer.
+    const layer = (xr.getBaseLayer && xr.getBaseLayer()) || (session && session.renderState && session.renderState.baseLayer);
+    if (!session || !frame || !space || !layer) { state.overlayStatus = 'no XR layer yet'; return false; }
+    const projection = !('framebuffer' in layer);
+    const binding = projection && xr.getBinding ? xr.getBinding() : null;
+    if (projection && !binding) { state.overlayStatus = 'projection layer without a binding'; return false; }
     const pose = frame.getViewerPose(space);
-    if (!pose) return false;
+    if (!pose) { state.overlayStatus = 'no viewer pose'; return false; }
     const gl = renderer.getContext();
     let o = state.overlay;
     if (!o || o.gl !== gl) o = state.overlay = { ...overlayProgram(gl), uploaded: -1 };
@@ -2406,7 +2414,19 @@
     if (!drawPanel && !lineData.length) return true;
 
     const isGl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    if (projection && !o.fbo) o.fbo = gl.createFramebuffer();
+    // Where each eye goes: the layer's framebuffer + viewport, or the projection layer's texture (side-by-side or
+    // one per eye / texture-array slice) attached to our own framebuffer.
+    const target = (view) => {
+      if (!projection) { gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer); return layer.getViewport(view); }
+      const sub = binding.getViewSubImage(layer, view);
+      if (!sub || !sub.colorTexture) return null;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, o.fbo);
+      if (isGl2 && layer.textureArrayLength > 1) gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, sub.colorTexture, 0, sub.imageIndex || 0);
+      else gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sub.colorTexture, 0);
+      return sub.viewport;
+    };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, projection ? o.fbo : layer.framebuffer);
     if (isGl2) { gl.bindVertexArray(null); gl.bindSampler(0, null); gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null); }
     gl.useProgram(prog);
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.SCISSOR_TEST); gl.disable(gl.STENCIL_TEST);
@@ -2433,7 +2453,7 @@
     }
     if (lineData.length) { gl.bindBuffer(gl.ARRAY_BUFFER, lines); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineData), gl.DYNAMIC_DRAW); }
     for (const view of pose.views) {
-      const vp = layer.getViewport(view);
+      const vp = target(view);
       if (!vp) continue;
       gl.viewport(vp.x, vp.y, vp.width, vp.height);
       const vpm = mat4.mul(view.projectionMatrix, view.transform.inverse.matrix);
@@ -2463,7 +2483,9 @@
       }
     }
     gl.disableVertexAttribArray(loc.p); gl.disableVertexAttribArray(loc.uv);
+    if (projection) { gl.bindFramebuffer(gl.FRAMEBUFFER, o.fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0); }
     renderer.resetState();
+    state.overlayStatus = projection ? 'projection layer' + (layer.textureArrayLength > 1 ? ' (texture array)' : '') : 'WebGL layer';
     state.overlayDraws = (state.overlayDraws || 0) + 1;
     return true;
   }
@@ -3156,7 +3178,7 @@
       'Players: ' + (state.gameScene ? 'game scene' : state.lateScene ? 'map probe' : 'not found') + (state.reprobe ? ' (re-searching)' : '')
         + ' · local: ' + (player ? 'yes' : 'no'),
       'Aim: ' + config.aimMode + ' · learned ' + (state.aim.ratioX * 1000).toFixed(2) + ' mrad/px' + (state.aim.stuck > 30 ? ' · NOT RESPONDING' : ''),
-      'Menu panel: ' + (state.menu ? (state.overlayOk ? 'drawn directly (' + (state.overlayDraws || 0) + ' frames)' : 'three.js mesh') + (state.menu.hudMap ? ' as HUD (' + state.menu.hudWidgets + ' widgets)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
+      'Menu panel: ' + (state.menu ? (state.overlayOk ? 'drawn directly (' + (state.overlayDraws || 0) + ' frames, ' + (state.overlayStatus || '') + ')' : 'three.js mesh' + (state.overlayStatus ? ' (direct: ' + state.overlayStatus + ')' : '')) + (state.menu.hudMap ? ' as HUD (' + state.menu.hudWidgets + ' widgets)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
         + ' · laser: ' + (state.uiHit ? 'on ' + state.uiHit.element.tagName.toLowerCase() : 'off') + ' · mouse captured: ' + (document.pointerLockElement ? 'yes' : 'no'),
       'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
         + ' · game locked ' + describeEl(state.lockTarget) + ' (' + (state.lockRequests || 0) + 'x) · keys held ' + ([...state.keysDown].join(' ') || 'none'),

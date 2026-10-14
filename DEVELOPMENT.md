@@ -2,7 +2,7 @@
 
 Context for anyone (human or AI) continuing work on Fister VR. Current version: see `@version` in `src/fister-vr.js`.
 
-## Start here (state as of v0.9.11)
+## Start here (state as of v0.9.12)
 
 - **Working with the user:**
   - They test on a real Quest 2 and send videos, screenshots and **COPY LOG** reports. COPY LOG is the button next to VR INFO; the "Menu panel" and "Aim" lines plus the log are the key diagnostics.
@@ -15,7 +15,7 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
   5. Tell the user to re-copy the bookmarklet once the setup page footer shows the new version.
 - **Tests:** `cd test; NODE_PATH=/opt/node-tools/node_modules PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node runN.cjs`.
   - They need `three.module.js` and `three.core.js` in `test/site/` (gitignored; copy them from an npm `three` build).
-  - The full suite is run6–20 and run23–30. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
+  - The full suite is run6–20 and run23–31. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
   - Don't overwrite existing test numbers; another chat also adds tests. Use the next free number and port.
 - **Reference code:** the user's `fister-community-server.zip` (server + `dist/shared/gameplay`, no client/HUD code) was used for the shoulder-aim origin and the `isEmoting` field. It isn't in the repo; ask the user to re-upload it if needed.
 - **Open / unverified on the real game:**
@@ -25,7 +25,7 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
   - Held items (`ITEM_KEYS`, v0.8.0+): the user reported many still missing or wrong at v0.7.9. Not re-checked since.
   - The three.js-built panel never rendered on the Quest; the cause is unknown. Direct WebGL drawing (`drawOverlay`) is used instead.
   - Clips / flat page (v0.9.11): does the page mirror show the view on the Quest, and which clip method does COPY LOG's "Clips:" line report (canvas, or readback async/sync)? If it says "game canvas BLACK" too, the scene itself renders black in the clip camera, not just the copy.
-  - Still open from the v0.9.9 overhaul (user report, not yet looked at): the main menu in menu-only VR is a black area, and loading into a map flashes the skybox instead of the loading room. Suspects: `applyVirtualScreen`'s spoofed size and `resize` events vs. hand-off (`handOffStandalone`, `isMainRenderer`) and theater/gameplay switching. Quick test: `fisterVR.config.virtualScreen = false`.
+  - Main menu in VR (v0.9.12): fixed in the stand-in (run31) for a menu drawn through an offscreen buffer with an avatar-preview inset. Unconfirmed on the Quest: the COPY LOG "Renders/s:" line shows what the real menu does. Still open: loading into a map flashes the skybox instead of the loading room (the same line, taken while loading, should explain it).
 
 ## Target and constraints
 
@@ -130,6 +130,19 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Arms and body: armMode 'hand', swapArms true, handOffset {forward 0.15, inward 0.06, up 0}, hideBody true, eyeOffset.up 0.1.
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
+
+## v0.9.12: main menu black in VR (preview inset, offscreen menu view)
+
+- Quest COPY LOG on 0.9.11, main menu: View menu/theater, 249 repeated frames out of ~300, clip picture and game canvas both BLACK, only renderer "small, not the game view" at capture.
+- Reproduced in `game2.html?composite` (run31): the menu scene goes into a 960x540 render target, an orthographic copy goes to the screen, and a dark avatar preview (more objects, drawn on some frames, scissored 20%x30% inset) goes straight to the screen.
+  - `pickMain` scores cameras by renders × canvas area × scene size, so the preview camera became `state.gameCamera`.
+  - `renderThroughVr` then took the preview inset as the headset view ("camera === gameplayCamera() || toScreen") and dropped the offscreen menu and its flat copy. The headset showed the preview's dark background; frames without a preview draw repeated it.
+- Fixes in `renderThroughVr`:
+  - **Insets are never the headset view** (`isInsetRender`): a screen render whose viewport, or scissor when on, is under 30% of the biggest unscissored screen area seen (at least 40% of `renderer.getSize()`). Viewport/scissor/size are read through three's own objects (`getViewport({copy})`, `getSize({set})`), no Vector4 needed.
+  - Offscreen renders count as the gameplay view only for a **confirmed** gameplay camera (`confirmedGameplayCamera`: the game scene's camera or `state.gameplayCamera`), not the busiest camera at session start.
+  - **Offscreen views** (`noteOffscreenView`): perspective renders into a full-screen-shaped target (2D, at least 256x144, aspect 1.1–2.8) are remembered per XR frame (biggest wins). If nothing reached the screen by the end of the frame, that scene/camera is drawn as the headset view (`state.offscreenViews`), before the repeat fallback.
+- COPY LOG: new **"Renders/s:"** line (per second, while in VR): perspective renders to the screen, insets skipped (size), offscreen views (target size, how many shown), flat passes dropped (camera type). This is what to read on the real menu and while loading a map.
+- Not verified on the Quest.
 
 ## v0.9.11: clips and the flat page in VR (page mirror, read-back)
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.11
+// @version      0.9.12
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.11';
+  const VERSION = '0.9.12';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -238,6 +238,9 @@
     rafSeq: 0x40000000,
     gameAnimationLoop: new WeakMap(), // renderer -> game's own setAnimationLoop callback, if any
     xrTarget: null,
+    renderStats: { screen: 0, inset: 0, offscreen: 0, flat: 0, used: 0, insetSize: '', offscreenSize: '', flatCamera: '', since: 0 },
+    renderRate: null,
+    xrFrameNo: 0,
     mainRendered: false,
     fp: null,                // { owner, key, previous, label }
     hiddenHead: null,
@@ -565,6 +568,14 @@
     try { xrFrameBody(renderer, time, frame); } finally { state.inXrFrame = false; }
   }
   function xrFrameBody(renderer, time, frame) {
+    state.xrFrameNo++;
+    const rs = state.renderStats;
+    if (!rs.since) rs.since = time;
+    if (time - rs.since >= 1000) {
+      const k = 1000 / (time - rs.since);
+      state.renderRate = { screen: rs.screen * k, inset: rs.inset * k, offscreen: rs.offscreen * k, flat: rs.flat * k, used: rs.used * k, insetSize: rs.insetSize, offscreenSize: rs.offscreenSize, flatCamera: rs.flatCamera };
+      Object.assign(rs, { screen: 0, inset: 0, offscreen: 0, flat: 0, used: 0, since: time });
+    }
     safe('timers', runDueTimers);
     state.xrTarget = renderer.getRenderTarget();
     state.mainRendered = false;
@@ -584,6 +595,14 @@
     state.rafQueue = new Map();
     for (const callback of queue.values()) {
       try { callback(time); } catch (error) { record('game-error', ['Game frame error:', error]); nativeConsole.error(error); }
+    }
+    // Nothing went to the screen, but the game drew a full-screen-shaped offscreen view (render scaling): show that.
+    const off = state.offscreenView;
+    if (!state.mainRendered && off && off.frame === state.xrFrameNo) {
+      state.offscreenViews = (state.offscreenViews || 0) + 1;
+      state.renderStats.used++;
+      if (state.offscreenViews === 1) log('Headset view: the game draws this screen into an offscreen buffer (' + state.renderStats.offscreenSize + '); showing that.');
+      safe('offscreen view', () => renderMain(renderer, renderer.__fisterVrOriginalRender, off.scene, off.camera));
     }
     // Frame pacers (the game's, or FisterQoL's FPS cap) may skip a frame. An XR frame with no draw shows black,
     // so repeat the last view instead.
@@ -645,20 +664,73 @@
     if (isSceneRender) {
       const target = renderer.getRenderTarget();
       const toScreen = target === null || target === state.xrTarget;
+      const inset = toScreen && isInsetRender(renderer);
+      if (inset) {
+        // A small picture-in-picture (avatar/cosmetic preview, minimap): never the headset view. On the Quest the
+        // menu's preview was taken for the view, and the headset showed its dark background.
+        state.renderStats.inset++;
+        state.renderStats.insetSize = insetLabel(renderer);
+        return;
+      }
       // The headset view is the gameplay camera (even if it renders into a post-processing target), or whatever
       // perspective camera the game draws to the screen: menus, between rounds, killcam, spectating.
-      if (camera === gameplayCamera() || toScreen) {
+      if (camera === confirmedGameplayCamera() || toScreen) {
+        if (toScreen) state.renderStats.screen++;
         if (state.mainRendered) return; // one headset view per XR frame
         return renderMain(renderer, originalRender, scene, camera);
       }
+      // A full-screen-shaped offscreen target (render scaling, post-processing): if nothing reaches the screen this
+      // frame, it becomes the headset view at the end of the frame (the flat copy the game then draws can't be
+      // shown in stereo).
+      noteOffscreenView(scene, camera, target);
     }
     // Everything else: offscreen helpers render normally (XR off for the call); screen-space post-processing
     // passes are dropped because they cannot be drawn stereo.
     const target = renderer.getRenderTarget();
-    if (target === null || target === state.xrTarget) return;
+    if (target === null || target === state.xrTarget) {
+      if (camera && !camera.isPerspectiveCamera) { state.renderStats.flat++; state.renderStats.flatCamera = camera.type || 'camera'; }
+      return;
+    }
     renderer.xr.enabled = false;
     try { return originalRender.call(renderer, scene, camera); }
     finally { renderer.xr.enabled = true; }
+  }
+
+  // A camera we know follows our avatar: the game scene's camera, or one seen near the head. (state.gameCamera alone
+  // is only the busiest camera when VR started, which on the main menu can be an avatar preview.)
+  function confirmedGameplayCamera() {
+    const gs = state.gameScene;
+    if (gs && gs.camera && gs.camera.isCamera) return gs.camera;
+    return state.gameplayCamera || null;
+  }
+  // The renderer's own viewport / scissor / size objects (three returns target.copy(internal) / target.set(w, h)).
+  function rendererRect(renderer, getter) { let r = null; try { renderer[getter]({ copy(v) { r = v; return this; } }); } catch {} return r; }
+  function rendererSizeArea(renderer) { let a = 0; try { renderer.getSize({ set(x, y) { a = x * y; return this; } }); } catch {} return a; }
+  function isInsetRender(renderer) {
+    const area = (r) => (r ? Math.max(0, r.z) * Math.max(0, r.w) : 0);
+    const vp = area(rendererRect(renderer, 'getViewport'));
+    const scissor = renderer.getScissorTest && renderer.getScissorTest() ? area(rendererRect(renderer, 'getScissor')) : 0;
+    const drawn = scissor ? Math.min(vp || scissor, scissor) : vp;
+    if (!drawn) return false;
+    // "Full screen" = the biggest unscissored area the game has drawn to the screen, at least the renderer's size.
+    if (!scissor) state.fullViewArea = Math.max(state.fullViewArea || 0, vp);
+    const full = Math.max(state.fullViewArea || 0, rendererSizeArea(renderer) * 0.4);
+    return drawn < full * 0.3;
+  }
+  function insetLabel(renderer) {
+    const r = renderer.getScissorTest && renderer.getScissorTest() ? rendererRect(renderer, 'getScissor') : rendererRect(renderer, 'getViewport');
+    return r ? Math.round(r.z) + 'x' + Math.round(r.w) : '?';
+  }
+  function noteOffscreenView(scene, camera, target) {
+    if (!target || target.isWebGLCubeRenderTarget || target.isWebGL3DRenderTarget || target.isWebGLArrayRenderTarget) return;
+    const w = target.width, h = target.height;
+    if (!(w >= 256 && h >= 144)) return;
+    const aspect = w / h;
+    if (aspect < 1.1 || aspect > 2.8) return; // square/portrait targets are previews and icons
+    state.renderStats.offscreen++;
+    state.renderStats.offscreenSize = w + 'x' + h;
+    const c = state.offscreenView;
+    if (!c || c.frame !== state.xrFrameNo || w * h > c.area) state.offscreenView = { scene, camera, area: w * h, frame: state.xrFrameNo };
   }
 
   function gameplayCamera() {
@@ -1026,6 +1098,14 @@
   function removeMirror() {
     const m = state.clip && state.clip.canvas;
     if (m && m.isConnected) m.remove();
+  }
+  function renderReport() {
+    const r = state.renderRate;
+    if (!state.presenting || !r) return '-';
+    const n = (v) => Math.round(v);
+    return 'to screen ' + n(r.screen) + ' · insets skipped ' + n(r.inset) + (r.inset ? ' (' + r.insetSize + ')' : '')
+      + ' · offscreen views ' + n(r.offscreen) + (r.offscreen ? ' (' + r.offscreenSize + ', shown ' + n(r.used) + ')' : '')
+      + ' · flat passes dropped ' + n(r.flat) + (r.flat ? ' (' + r.flatCamera + ')' : '');
   }
   function clipReport() {
     const clip = state.clip;
@@ -3546,6 +3626,7 @@
       'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
         + ' · game locked ' + describeEl(state.lockTarget) + ' (' + (state.lockRequests || 0) + 'x) · keys held ' + ([...state.keysDown].join(' ') || 'none'),
       'Frame: ' + (state.frameMs ? state.frameMs.toFixed(1) + ' ms' : '-') + ' · mod work ' + (state.modMs || 0).toFixed(1) + ' ms · repeated frames ' + (state.repeats || 0) + ' · blocked late clears ' + (state.blockedClears || 0) + ' · position glitches ' + (state.glitches || 0),
+      'Renders/s: ' + renderReport(),
       'Clips: ' + clipReport(),
       'Feature errors: ' + errors,
     ];

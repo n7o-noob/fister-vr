@@ -98,6 +98,31 @@ class Game {
       if (!me.firstPersonWeaponRoot.parent) { this.camera.add(me.firstPersonWeaponRoot); me.firstPersonWeaponRoot.position.set(0.3, -0.3, -0.5); }
     }
     if (this.glitchNext) { this.glitchNext = false; me.head.position.set(NaN, NaN, NaN); me.head.updateMatrixWorld(); }
+    if (location.search.includes('composite') && !window.__started) {
+      // Main menu like a render-scaled game: 3D background into an offscreen target, then a flat full-screen copy
+      // (orthographic camera) to the screen, plus a small avatar preview drawn straight to the screen (dark, scissored).
+      const r = this.renderer, size = r.getSize(new THREE.Vector2());
+      if (!this.menuTarget) {
+        this.menuTarget = new THREE.WebGLRenderTarget(960, 540);
+        this.blitScene = new THREE.Scene(); this.blitCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        this.blitScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: this.menuTarget.texture })));
+        this.previewScene = new THREE.Scene(); this.previewScene.background = new THREE.Color(0x050505);
+        // Avatar parts + cosmetics: more objects than the menu scene, so it looks like the "main" camera to a picker.
+        for (let i = 0; i < 12; i++) { const m = new THREE.Mesh(new THREE.BoxGeometry(.1, .2, .1), new THREE.MeshBasicMaterial({ color: 0x333333 })); m.position.set((i % 4 - 1.5) * .12, Math.floor(i / 4) * .22 - .22, 0); this.previewScene.add(m); }
+        this.previewCamera = new THREE.PerspectiveCamera(40, 1, 0.1, 10); this.previewCamera.position.set(0, 0, 2);
+      }
+      this.menuScene.children[0].rotation.y = this.frames * 0.02;
+      r.setRenderTarget(this.menuTarget); r.render(this.menuScene, this.menuCamera); r.setRenderTarget(null);
+      r.render(this.blitScene, this.blitCamera);
+      const pw = Math.round(size.x * 0.2), ph = Math.round(size.y * 0.3);
+      // The preview redraws only on some frames (on demand), and twice when it does (e.g. a shadow/outline pass).
+      if (this.frames % 4 === 0) for (let k = 0; k < 2; k++) {
+      r.setScissorTest(true); r.setScissor(20, 20, pw, ph); r.setViewport(20, 20, pw, ph);
+      r.autoClear = false; r.clear(); r.render(this.previewScene, this.previewCamera); r.autoClear = true;
+      r.setScissorTest(false); r.setViewport(0, 0, size.x, size.y);
+      }
+      this.frames++; requestAnimationFrame(this.frame); return;
+    }
     if (this.mode === 'menu') this.renderer.render(this.menuScene, this.menuCamera);
     else this.renderer.render(this.scene, this.camera);
     if (this.lateClear) this.renderer.clear(); // a game that clears after drawing

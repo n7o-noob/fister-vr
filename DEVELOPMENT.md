@@ -106,6 +106,24 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.4: FisterQoL bookmarklet under fister.fun's script policy
+
+- Quest log on 0.9.3: "frame loaded WITHOUT FisterQoL" three times and never "FisterQoL started in the frame", so the
+  frame's first inline script never ran. fister.fun's Content-Security-Policy blocks inline scripts. Bookmarks are
+  exempt (that's why the VR-only bookmarklet works), but an about:blank frame inherits the page's policy, so the
+  `<script>parent.__fisterQolBoot(window)</script>` tag (and in 0.9.0, the in-place `<script>` injection) was blocked.
+  The game never reloaded; the loader did. Reproduced exactly in `test/run26.cjs`.
+- Fix: `findHost()` fetches same-origin candidates (`/robots.txt`, favicon, manifests, the page's own script and icon
+  URLs, a non-existent path) and picks the first served without a `content-security-policy` or `x-frame-options`
+  header. The frame navigates there first; the home page is then written into that document, which keeps the host
+  file's (empty) policy. `<meta http-equiv=Content-Security-Policy>` tags are removed from the written copy. If no host is
+  found it falls back to about:blank and logs it.
+- Reload detection also treats the host file's URL as "the game reloaded itself" (a reload of a written document goes
+  back to the document the frame navigated to).
+- Log: the home page's policy header, the chosen host (or why each candidate was skipped), every
+  `securitypolicyviolation` in the page or frame (directive, blocked URL, policy), and "FisterQoL did not start in the
+  frame" if the boot script didn't run.
+
 ## v0.9.3: no more reload loops with the FisterQoL bookmarklet
 
 - User report: with the FisterQoL bookmarklet the page reloaded forever.

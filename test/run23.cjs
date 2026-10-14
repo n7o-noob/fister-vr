@@ -29,7 +29,7 @@ const server = http.createServer((req, res) => { let u = req.url.split('?')[0]; 
   await page.evaluate(() => { window.__fisterRuntimeLoaded = true; const r = document.createElement('div'); r.id = 'runtime-ui-root'; r.dataset.loaded = '1'; document.body.append(r); });
   await page.evaluate((c) => { location.href = c; }, bm).catch(() => {});
   await page.waitForSelector('#fister-qol-frame', { timeout: 15000 });
-  const frameOf = () => page.frames().find(f => f !== page.mainFrame());
+  const frameOf = () => page.frames().filter(f => f !== page.mainFrame() && !f.isDetached()).pop();
   await page.waitForFunction(() => { const f = document.getElementById('fister-qol-frame'); try { return f.contentWindow.game && f.contentWindow.game.frames > 30; } catch { return false; } }, null, { timeout: 20000 });
   const topFramesA = await page.evaluate(() => window.game.frames);
   await page.waitForTimeout(800);
@@ -42,9 +42,11 @@ const server = http.createServer((req, res) => { let u = req.url.split('?')[0]; 
   await fr.evaluate(() => fisterVR.toggle()); await page.waitForTimeout(400);
   // The game reloads itself inside the frame: FisterQoL must come back.
   await fr.evaluate(() => location.reload());
+  await page.waitForFunction(() => window.__fisterQolLog.some(l => /restarting the frame/.test(l)), null, { timeout: 20000 });
   await page.waitForFunction(() => { const f = document.getElementById('fister-qol-frame'); try { return f.contentWindow.__fisterQolBrowserLoading && f.contentWindow.game && f.contentWindow.game.frames > 10; } catch { return false; } }, null, { timeout: 20000 });
-  fr = frameOf();
-  out.afterReload = await fr.evaluate(() => ({ qol: !!window.__fisterQolBrowserLoading, fisterVR: window.fisterVR && fisterVR.version }));
+  await page.waitForTimeout(1000);
+  // Read the rebuilt frame from the page (its document is rewritten, which confuses frame handles).
+  out.afterReload = await page.evaluate(() => { const w = document.getElementById('fister-qol-frame').contentWindow; return { qol: !!w.__fisterQolBrowserLoading, fisterVR: w.fisterVR && w.fisterVR.version, url: w.location.href, frames: [...document.querySelectorAll('iframe')].map(f => { let u = '?'; try { u = f.contentWindow.location.href + (f.contentWindow.__fisterQolBrowserLoading ? ' qol' : ''); } catch {} return (f.id || 'no-id') + ' ' + (f.parentNode && f.parentNode.tagName) + ' ' + u; }) }; });
   out.afterReload.frames = page.frames().length;
   // Tapping the bookmark again
   await page.evaluate((c) => { location.href = c; }, bm).catch(() => {}); await page.waitForTimeout(500);

@@ -32,7 +32,7 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
     const res = {};
     const m = s.menu;
     res.panel = { built: !!m, problem: s.menuProblem || null, draws: m && m.draws, elements: m && m.nodes, msPerDraw: m && +m.drawMs.toFixed(2) };
-    const px = (x, y) => Array.from(m.ctx.getImageData(Math.round(x * m.canvas.width / innerWidth), Math.round(y * m.canvas.height / innerHeight), 1, 1).data);
+    const S0 = I.screenRect(); const px = (x, y) => Array.from(m.ctx.getImageData(Math.round(x * S0.k * m.canvas.width / S0.w), Math.round(y * S0.k * m.canvas.height / S0.h), 1, 1).data);
     res.painted = { healthTitleBlue: px(40, 22), stylePanelGrey: px(60, 58), emptyMiddle: px(640, 360) };
     // Is the panel drawn by a camera that only sees layer 1 (the layer-mismatch theory)?
     const shot = (visible) => { m.panel.visible = visible; const cam = s.view.clone(); s.view.getWorldPosition(cam.position); s.view.getWorldQuaternion(cam.quaternion); cam.layers.mask = g.camera.layers.mask; cam.aspect = 16 / 9; cam.updateProjectionMatrix();
@@ -48,7 +48,7 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
     res.pauseOpened = document.getElementById('pause').classList.contains('visible');
     const pointAt = async (el, fx = 0.5) => {
       const b2 = el.getBoundingClientRect();
-      const x = (b2.left + b2.width * fx) / innerWidth - 0.5, y = 0.5 - (b2.top + b2.height / 2) / innerHeight;
+      const S = I.screenRect(); const x = (b2.left + b2.width * fx - S.x) / S.w - 0.5, y = 0.5 - (b2.top + b2.height / 2 - S.y) / S.h;
       const world = m.panel.localToWorld(new T.Vector3(x, y, 0));
       const local = s.rig.worldToLocal(world.clone());
       const dir = local.sub(c0.group.position).normalize();

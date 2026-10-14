@@ -106,6 +106,25 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.9: 1920x1080 virtual screen, transparency; size options removed
+
+- User: still crowded. They asked to remove the width/height/size options, make the UI elements smaller and correctly placed on a 1920x1080 "fake screen", and add a transparency setting (setup page and FisterQoL).
+- **`applyVirtualScreen(on)`**, on while presenting (game session and menu-only VR), off at session end. While on:
+  - `<body>` gets `position:fixed; 1920x1080; transform: scale(k)` (k fits the real window). A transformed body is the containing block for `position:fixed`, so the game's overlays lay out as on a 1080p monitor, and `elementFromPoint` still works on the scaled-down page.
+  - `rewritePageForVirtualScreen()` runs every 2 s. It rewrites `vw/vh/vmin/vmax` (also `d`/`s`/`l` variants) in readable stylesheets and inline styles to 1080p px, and sets width/height/aspect/orientation media rules to `all` / `not all` as evaluated for 1920x1080 (`mediaMatchesVirtual`). Undo closures restore everything.
+  - `spoofWindowSize(true)` makes `innerWidth/innerHeight/outerWidth/outerHeight` report 1920x1080. These are own accessors on `window` in Chrome, so the original descriptors are saved and put back; deleting them removes the properties.
+  - The mod's own code uses `winSize()` (the real window).
+- **Painter.** It maps `screenRect()` (the body's visual rect) to the canvas. CSS sizes (fonts, borders, radii, padding, bevels, image natural sizes) are multiplied by `k` (visual px per CSS px). Big canvases (any renderer canvas, or one over 30% of the window) are not painted.
+  - Canvas default 1600x900 (`menu.resolution` 1600). The panel and menu-only VR panel are 16:9.
+- **Floating screen.**
+  - `config.screen = { distance: 2.0, width: 2.5 }` for both menus and HUD. Menus are body-locked with a 0.15 m drop; the HUD is head-following at eye level.
+  - The v0.8.2 HUD widget relayout (pull/grow, `hudMap`) is removed: elements stay where the game puts them.
+  - `uiWidth`/`uiHeight`/`uiScale`, the in-VR resize controls and the setup page "Menu distance" option are removed.
+- **`uiOpacity`** (0.2–1, default 0.9) is the panel alpha in direct drawing, menu-only VR and the three.js fallback.
+  - Setup page: "VR screen transparency" (Solid / 0.9 / 0.75 / 0.6 / 0.4).
+  - QoL > VR: "VR screen transparency" slider (20–100%), live via `V.setVr({ uiOpacity })`.
+- Not verified on the real game: how much of Fister's UI uses `vw`/`vh` or JavaScript window sizes, and whether React re-lays out on the synthetic `resize` event.
+
 ## v0.9.8: separate VR menu width and height
 
 - User clarification on 0.9.7: "I meant the height and width, not actual size". The Quest Browser lays the page out in a wide, short window (1280x587), so menus look squashed.

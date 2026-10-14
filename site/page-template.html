@@ -235,34 +235,15 @@ ul.notes li { max-width: 68ch; }
           <small>Main menu, loading screens, settings, health, scoreboard and the charge bar, on a panel that stays in front of your body. Point your right hand at it and pull the trigger to click.</small>
         </div>
         <div class="field">
-          <label for="menuDistance">Menu distance</label>
-          <select id="menuDistance">
-            <option value="1.1,1.3">Close</option>
-            <option value="1.4,1.6" selected>Normal</option>
-            <option value="1.8,2.0">Far</option>
+          <label for="uiOpacity">VR screen transparency</label>
+          <select id="uiOpacity">
+            <option value="1">Solid</option>
+            <option value="0.9" selected>Slightly see-through</option>
+            <option value="0.75">See-through</option>
+            <option value="0.6">Very see-through</option>
+            <option value="0.4">Faint</option>
           </select>
-          <small>How far away the panel floats, and how wide it is.</small>
-        </div>
-        <div class="field">
-          <label for="uiWidth">VR menu width</label>
-          <select id="uiWidth">
-            <option value="1">Narrow (old)</option>
-            <option value="1.4" selected>Normal</option>
-            <option value="1.8">Wide</option>
-            <option value="2.3">Extra wide</option>
-          </select>
-          <small>How wide the menus and in-match HUD are in the headset.</small>
-        </div>
-        <div class="field">
-          <label for="uiHeight">VR menu height</label>
-          <select id="uiHeight">
-            <option value="1">Short (old, squashed)</option>
-            <option value="1.4">Medium</option>
-            <option value="1.8" selected>Tall</option>
-            <option value="2.3">Extra tall</option>
-            <option value="2.8">Tallest</option>
-          </select>
-          <small>Taller un-squashes the menus. Fine-tune in VR: point at a menu, push the right stick left/right for width, or hold the right grip and push it up/down for height.</small>
+          <small>The game's menus and HUD show on a floating 1920x1080 screen. This sets how much of the world shows through it.</small>
         </div>
         <div class="field">
           <label for="hideOutlines">Outline glow</label>
@@ -361,7 +342,7 @@ ul.notes li { max-width: 68ch; }
 const LAYER_SOURCE = __LAYER_SOURCE__;
 const QOL_PAYLOAD = __QOL_PAYLOAD__;
 __QOL_LOADER__
-const ids = ['bundle', 'applyEach', 'aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody', 'uiWidth', 'uiHeight'];
+const ids = ['bundle', 'applyEach', 'aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody', 'uiOpacity'];
 const codeEl = document.getElementById('code');
 const sizeEl = document.getElementById('size');
 const statusEl = document.getElementById('status');
@@ -382,9 +363,8 @@ function overrides() {
     eyeOffset: { up: Number(v('eyeUp')), forward: 0 },
     armScale: Number(v('armScale')),
     boxScale: Number(v('boxScale')),
-    uiWidth: Number(v('uiWidth')),
-    uiHeight: Number(v('uiHeight')),
-    menu: (() => { const [d, w] = v('menuDistance').split(',').map(Number); return { mode: v('menuMode'), distance: d, width: w }; })(),
+    uiOpacity: Number(v('uiOpacity')),
+    menu: { mode: v('menuMode') },
     hideOutlines: v('hideOutlines'),
     swapArms: true, // Fister names its arms backwards; always corrected
     hideBody: v('hideBody') === 'true',

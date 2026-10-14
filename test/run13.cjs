@@ -26,9 +26,9 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
   });
   // Aim the right controller at the Settings button on the panel and pull the trigger.
   await page.evaluate(() => {
-    const b = document.getElementById('openSettings').getBoundingClientRect(), w = 1.6 * fisterVR.config.uiWidth, h = 1.6 * (innerHeight / innerWidth) * fisterVR.config.uiHeight;
-    const x = ((b.left + b.width / 2) / innerWidth - 0.5) * w, y = (0.5 - (b.top + b.height / 2) / innerHeight) * h;
-    const target = [x, 1.6 - 0.15 + y, -1.4], o = [0.2, 1.2, -0.3];
+    const b = document.getElementById('openSettings').getBoundingClientRect(), S = fisterVR._internals.screenRect(), w = fisterVR.config.screen.width, h = w * 1080 / 1920;
+    const x = ((b.left + b.width / 2 - S.x) / S.w - 0.5) * w, y = (0.5 - (b.top + b.height / 2 - S.y) / S.h) * h;
+    const target = [x, 1.6 - 0.15 + y, -fisterVR.config.screen.distance], o = [0.2, 1.2, -0.3];
     __xrMock.setRay('right', o, target.map((v, i) => v - o[i]));
   });
   await page.waitForTimeout(150);

@@ -19,8 +19,10 @@ body{margin:0;background:#000;overflow:hidden;font-family:Tahoma,Arial,sans-seri
 #settings label{display:block;margin:6px;font-size:13px}
 #list{height:90px;overflow-y:auto;background:#fff;margin:6px;box-shadow:inset 1px 1px #808080}
 #list div{padding:4px 6px;font-size:13px}
-</style></head>
-<body><div id="game"></div>
+</style><style>#vwbox{position:fixed;left:25vw;top:10vh;width:50vw;height:20vh;background:#357}@media (max-height:800px){#vwbox{border:6px solid red}}</style>
+</head>
+<body>
+<div id="vwbox"></div><div id="game"></div>
 <button id="respawn" style="display:none">Respawn</button>
 <div id="hud">
   <div class="win" id="health"><div class="title">HEALTH</div><div class="bar"></div><div id="stats"><div>STYLE: <span style="color:#d60">360</span></div><div>SOULS: <span style="color:#088">0</span></div></div></div>

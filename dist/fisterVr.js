@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.8
+// @version      0.9.9
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.8';
+  const VERSION = '0.9.9';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -76,11 +76,12 @@
     // Where the game's aim ray starts. The server (fister-community-server, getChunkThrowVelocity) aims from the
     // player's shoulder: body position + 0.2 (mesh root offset) + 1, along the look yaw/pitch. 'camera' is the old guess.
     aimOrigin: 'shoulder',
-    // Width and height of every VR panel (menus, main menu, HUD), each 1 = the old size. The page is laid out in a
-    // wide, short window, so menus look squashed; a taller panel un-squashes them. In the headset, point at a menu:
-    // right stick left/right = width; hold the right grip + stick up/down = height. (uiScale: old single setting.)
-    uiWidth: 1.4,
-    uiHeight: 1.8,
+    // The game's menus and HUD are shown on a floating 16:9 screen. While in VR the page is laid out as if on a
+    // 1920x1080 monitor (the Quest Browser window is a short 1280x587), so the UI keeps its desktop proportions and
+    // positions. screen: how far away and how wide (metres) the floating screen is.
+    virtualScreen: true,
+    screen: { distance: 2.0, width: 2.5 },
+    uiOpacity: 0.9,               // 0.2-1: how see-through the floating screen is
     // In-match HUD panel (health, style, scoreboard): distance and width in metres, and how far below eye level.
     // pull: how far widgets are moved in toward the centre of view (1 = where the page has them, 0 = all in the middle);
     // grow: how much bigger they're drawn.
@@ -90,7 +91,7 @@
     aimPitch: true,
     // Head-locked copy of the game's 2D interface (HUD, menus) with a laser pointer on the aim hand.
     // The game's menus and HUD on a panel in front of your body. mode 'body' or 'off'. Sizes in metres.
-    menu: { mode: 'body', distance: 1.4, width: 1.6, drop: 0.15, tiltDeg: 8, followDeg: 35, maxFps: 12, resolution: 1280 },
+    menu: { mode: 'body', distance: 1.4, width: 1.6, drop: 0.15, tiltDeg: 8, followDeg: 35, maxFps: 12, resolution: 1600 },
     spoofPointerLock: true,       // tell the game the mouse is captured while in VR (needed for aim to reach it)
     // Head mode: raise the eyes above the avatar head's centre (metres; scaled with worldScale).
     eyeOffset: { up: 0.1, forward: 0 },
@@ -148,6 +149,7 @@
     merged.menu = { ...DEFAULT_CONFIG.menu, ...(saved.menu || {}), ...(baked.menu || {}) };
     merged.eyeOffset = { ...DEFAULT_CONFIG.eyeOffset, ...(saved.eyeOffset || {}), ...(baked.eyeOffset || {}) };
     merged.hud = { ...DEFAULT_CONFIG.hud, ...(saved.hud || {}), ...(baked.hud || {}) };
+    merged.screen = { ...DEFAULT_CONFIG.screen, ...(saved.screen || {}), ...(baked.screen || {}) };
     merged.handOffset = { ...DEFAULT_CONFIG.handOffset, ...(saved.handOffset || {}), ...(baked.handOffset || {}) };
     if (merged.armOverride === false) merged.armMode = 'off';
     return merged;
@@ -316,10 +318,17 @@
   }
 
   // The game's main renderer draws to a big on-screen canvas; small ones (avatar previews) don't count.
+  // The real window size, even while the virtual screen reports 1920x1080 to the game.
+  const winSize = (() => {
+    const d = (k) => Object.getOwnPropertyDescriptor(window, k) || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(window), k);
+    const w = d('innerWidth'), h = d('innerHeight');
+    return () => ({ w: (w && w.get ? w.get.call(window) : window.innerWidth) || 1280, h: (h && h.get ? h.get.call(window) : window.innerHeight) || 720 });
+  })();
   function isMainRenderer(renderer) {
     const c = renderer && renderer.domElement;
     if (!c || !c.isConnected) return false;
-    return (c.clientWidth * c.clientHeight) > 0.3 * innerWidth * innerHeight;
+    const win = winSize();
+    return (c.clientWidth * c.clientHeight) > 0.3 * win.w * win.h;
   }
   function hasMainRenderer() { for (const r of state.renderers) if (isMainRenderer(r)) return true; return false; }
 
@@ -1729,7 +1738,7 @@
 
   // --- page helpers ------------------------------------------------------------------------------------------
   const isOurs = (el) => !!(el && el.closest && el.closest('#fister-vr-bar, #fister-vr-status, #fister-steam-overlay-heartbeat'));
-  const isGameCanvas = (el) => !!(el && state.renderer && el === state.renderer.domElement);
+  const isGameCanvas = (el) => !!(el && ((state.renderer && el === state.renderer.domElement) || [...state.renderers].some((r) => r.domElement === el)));
 
   // --- VR menus: the game's 2D interface on a panel in front of your body ------------------------------------------
   // Fister's HUD and menus (health, style/souls, scoreboard, charge bar, main menu, settings, loading screens) are a
@@ -1806,8 +1815,8 @@
     if (!C || !C.Mesh || !C.Attribute) { state.menuProblem = 'three.js classes not found yet'; return; }
     if (!C.Texture) C.Texture = findTextureCtor(state.threeScene);
     if (!C.Texture) { state.menuProblem = 'no texture class found yet'; return; }
-    const width = Math.max(512, Math.min(2048, Number(config.menu.resolution) || 1280));
-    const aspect = Math.min(1, Math.max(0.3, (innerHeight || 720) / (innerWidth || 1280)));
+    const width = Math.max(512, Math.min(2048, Number(config.menu.resolution) || 1600));
+    const aspect = screenAspect();
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = Math.round(width * aspect);
@@ -1889,32 +1898,161 @@
   // In a match (no menu open) the panel is a HUD: only the game's overlays (health, style, scoreboard, charge bar),
   // see-through, without the full-screen containers behind the game canvas (they painted a big gray slab).
   const hudMode = () => !!(state.gameplay && !state.ragdoll && !state.pointerLockReleased);
+
+  // --- 1920x1080 virtual screen ----------------------------------------------------------------------------------
+  // A transformed <body> is the containing block for position:fixed elements, so giving it a 1920x1080 box makes the
+  // game's overlay UI lay out as on a 1080p monitor. It's scaled down to fit the real window so the laser can still
+  // find elements with elementFromPoint. Undone when VR ends.
+  const VSCREEN_W = 1920, VSCREEN_H = 1080;
+  // Viewport units and screen-size media queries still follow the real window, so while the virtual screen is on:
+  // stylesheet vw/vh values become 1080p pixels, width/height media rules are re-decided for 1920x1080, and the
+  // game's scripts see innerWidth/innerHeight = 1920x1080. All of it is put back when VR ends.
+  const VUNIT = /(-?\d*\.?\d+)(d|s|l)?(vw|vh|vmin|vmax)\b/g;
+  const toPx = (val) => val.replace(VUNIT, (m, n, _x, u) => {
+    const per = u === 'vw' ? VSCREEN_W : u === 'vh' ? VSCREEN_H : u === 'vmin' ? Math.min(VSCREEN_W, VSCREEN_H) : Math.max(VSCREEN_W, VSCREEN_H);
+    return (Number(n) * per / 100).toFixed(2).replace(/\.?0+$/, '') + 'px';
+  });
+  function mediaMatchesVirtual(text) {
+    // true / false, or null when it can't be decided (leave the rule alone).
+    if (!/width|height|aspect|orientation/i.test(text)) return null;
+    const lenPx = (v) => { const m = /^\s*(-?[\d.]+)\s*(px|em|rem)?\s*$/.exec(v); return m ? Number(m[1]) * (m[2] === 'em' || m[2] === 'rem' ? 16 : 1) : NaN; };
+    const W = VSCREEN_W, H = VSCREEN_H;
+    let any = false;
+    for (const part of text.split(',')) {
+      let p = part.trim().toLowerCase(), ok = true, neg = false;
+      if (p.startsWith('not ')) { neg = true; p = p.slice(4); }
+      if (/^only\s+/.test(p)) p = p.replace(/^only\s+/, '');
+      if (/^print\b/.test(p)) ok = false;
+      for (const c of p.match(/\(([^()]*)\)/g) || []) {
+        const body = c.slice(1, -1).trim();
+        let m;
+        if ((m = /^(min|max)-(width|height)\s*:\s*(.+)$/.exec(body))) { const v = lenPx(m[3]), have = m[2] === 'width' ? W : H; if (isNaN(v)) return null; ok = ok && (m[1] === 'min' ? have >= v : have <= v); }
+        else if ((m = /^(width|height)\s*(<=|>=|<|>)\s*(.+)$/.exec(body))) { const v = lenPx(m[3]), have = m[1] === 'width' ? W : H; if (isNaN(v)) return null; ok = ok && ({ '<': have < v, '>': have > v, '<=': have <= v, '>=': have >= v })[m[2]]; }
+        else if ((m = /^orientation\s*:\s*(\w+)$/.exec(body))) ok = ok && (m[1] === 'landscape');
+        else if ((m = /^(min|max)-aspect-ratio\s*:\s*([\d.]+)\s*\/\s*([\d.]+)$/.exec(body))) { const r = Number(m[2]) / Number(m[3]); ok = ok && (m[1] === 'min' ? W / H >= r : W / H <= r); }
+        else if (/width|height|aspect/.test(body)) return null;
+        else { try { ok = ok && window.matchMedia('(' + body + ')').matches; } catch { return null; } }
+      }
+      if (neg) ok = !ok;
+      if (ok) any = true;
+    }
+    return any;
+  }
+  function rewriteRules(rules, undo, seen) {
+    for (const rule of rules) {
+      if (seen.has(rule)) continue;
+      seen.add(rule);
+      if (rule.media && rule.cssRules && typeof rule.media.mediaText === 'string') {
+        const verdict = mediaMatchesVirtual(rule.media.mediaText);
+        if (verdict !== null) { const old = rule.media.mediaText; rule.media.mediaText = verdict ? 'all' : 'not all'; undo.push(() => { rule.media.mediaText = old; }); }
+      }
+      if (rule.style) {
+        const st = rule.style;
+        for (let i = 0; i < st.length; i++) {
+          const name = st[i], val = st.getPropertyValue(name);
+          if (!VUNIT.test(val)) continue;
+          VUNIT.lastIndex = 0;
+          const prio = st.getPropertyPriority(name);
+          st.setProperty(name, toPx(val), prio);
+          undo.push(() => st.setProperty(name, val, prio));
+        }
+        VUNIT.lastIndex = 0;
+      }
+      if (rule.cssRules && rule.type !== 7) { try { rewriteRules(rule.cssRules, undo, seen); } catch {} }
+    }
+  }
+  function rewritePageForVirtualScreen() {
+    const v = state.vscreen;
+    if (!v) return;
+    for (const sheet of document.styleSheets) { let rules = null; try { rules = sheet.cssRules; } catch {} if (rules) rewriteRules(rules, v.undo, v.seen); }
+    for (const el of document.querySelectorAll('[style*="vw"], [style*="vh"], [style*="vmin"], [style*="vmax"]')) {
+      if (el === document.body || isOurs(el)) continue;
+      const before = el.getAttribute('style');
+      const after = toPx(before);
+      VUNIT.lastIndex = 0;
+      if (after !== before) { el.setAttribute('style', after); v.undo.push(() => { if (el.getAttribute('style') === after) el.setAttribute('style', before); }); }
+    }
+  }
+  function spoofWindowSize(on) {
+    const keys = ['innerWidth', 'innerHeight', 'outerWidth', 'outerHeight'];
+    if (on) {
+      if (state.winDescriptors) return;
+      state.winDescriptors = {};
+      const values = { innerWidth: VSCREEN_W, innerHeight: VSCREEN_H, outerWidth: VSCREEN_W, outerHeight: VSCREEN_H };
+      for (const k of keys) {
+        state.winDescriptors[k] = Object.getOwnPropertyDescriptor(window, k) || null;
+        try { Object.defineProperty(window, k, { configurable: true, enumerable: true, get: () => values[k], set() {} }); } catch {}
+      }
+    } else if (state.winDescriptors) {
+      for (const k of keys) {
+        const d = state.winDescriptors[k];
+        try { if (d) Object.defineProperty(window, k, d); else delete window[k]; } catch {}
+      }
+      state.winDescriptors = null;
+    }
+  }
+  function applyVirtualScreen(on) {
+    const body = document.body;
+    if (!body) return;
+    if (on && config.virtualScreen !== false) {
+      if (!state.vscreen) {
+        state.vscreen = { style: body.getAttribute('style'), undo: [], seen: new WeakSet(), scanned: -Infinity };
+        spoofWindowSize(true);
+        log('Virtual screen on: the page is laid out at 1920x1080 while in VR.');
+      }
+      const now = performance.now();
+      if (now - state.vscreen.scanned > 2000) { state.vscreen.scanned = now; safe('virtual screen styles', rewritePageForVirtualScreen); }
+      const win = winSize();
+      const k = Math.min(win.w / VSCREEN_W, win.h / VSCREEN_H);
+      if (state.vscreen.k === k) return;
+      state.vscreen.k = k;
+      const set = (name, value) => body.style.setProperty(name, value, 'important');
+      set('position', 'fixed'); set('left', '0px'); set('top', '0px'); set('margin', '0px');
+      set('width', VSCREEN_W + 'px'); set('height', VSCREEN_H + 'px'); set('overflow', 'hidden');
+      set('transform', 'scale(' + k + ')'); set('transform-origin', '0 0');
+      try { window.dispatchEvent(new Event('resize')); } catch {}
+    } else if (state.vscreen) {
+      const v = state.vscreen;
+      state.vscreen = null;
+      spoofWindowSize(false);
+      for (const fn of v.undo.reverse()) { try { fn(); } catch {} }
+      if (v.style === null) body.removeAttribute('style'); else body.setAttribute('style', v.style);
+      try { window.dispatchEvent(new Event('resize')); } catch {}
+    }
+  }
+  // The screen area being shown, in page (visual) pixels, and how many visual pixels one CSS pixel is.
+  function screenRect() {
+    if (state.vscreen && document.body) {
+      const r = document.body.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) return { x: r.left, y: r.top, w: r.width, h: r.height, k: r.width / VSCREEN_W };
+    }
+    const win = winSize();
+    return { x: 0, y: 0, w: win.w, h: win.h, k: 1 };
+  }
+  const screenAspect = () => (config.virtualScreen !== false ? VSCREEN_H / VSCREEN_W : Math.min(1, Math.max(0.3, winSize().h / winSize().w)));
+  const uiOpacity = () => Math.max(0.2, Math.min(1, Number(config.uiOpacity) || 0.9));
   function paintDom(menu) {
     const hud = hudMode();
-    // HUD: paint the page to a scratch canvas, then copy each on-screen widget (health box, scoreboard, popups) into
-    // the panel, pulled in toward the centre of view and drawn bigger. Page edges sit too far out to see in a headset.
-    let canvas = menu.canvas, ctx = menu.ctx;
-    const widgets = [];
-    if (hud) {
-      if (!menu.full) { menu.full = document.createElement('canvas'); menu.fullCtx = menu.full.getContext('2d'); }
-      if (menu.full.width !== canvas.width || menu.full.height !== canvas.height) { menu.full.width = canvas.width; menu.full.height = canvas.height; }
-      canvas = menu.full; ctx = menu.fullCtx;
-    }
-    const W = canvas.width, H = canvas.height, sx = W / innerWidth, sy = H / innerHeight;
+    if (state.presenting) applyVirtualScreen(true);
+    const canvas = menu.canvas, ctx = menu.ctx;
+    // Positions: page (visual) px -> canvas px. CSS sizes (fonts, borders, padding) are in CSS px: times k first.
+    const S = screenRect(), k = S.k;
+    const W = canvas.width, H = canvas.height, sx = W / S.w, sy = H / S.h;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.clearRect(0, 0, W, H);
+    ctx.setTransform(1, 0, 0, 1, -S.x * sx, -S.y * sy);
     let budget = 5000, nodes = 0, unverified = [];
     const verified = menu.verified || (menu.verified = new WeakSet());
     const drawSource = (src, key, x, y, w, h) => {
       try { ctx.drawImage(src, x, y, w, h); if (!verified.has(key)) unverified.push(key); } catch {}
     };
     const range = document.createRange();
-    const big = (r) => r.width * r.height > 0.5 * innerWidth * innerHeight;
+    const big = (r) => r.width * r.height > 0.5 * S.w * S.h;
 
     const boxPath = (r, cs) => {
       const x = r.left * sx, y = r.top * sy, w = r.width * sx, h = r.height * sy;
-      const radius = Math.min(parseFloat(cs.borderTopLeftRadius) || 0, r.width / 2, r.height / 2) * sx;
+      const radius = Math.min((parseFloat(cs.borderTopLeftRadius) || 0) * k, r.width / 2, r.height / 2) * sx;
       ctx.beginPath();
       if (radius > 0 && ctx.roundRect) ctx.roundRect(x, y, w, h, radius); else ctx.rect(x, y, w, h);
     };
@@ -1924,8 +2062,8 @@
         const m = cs.backgroundImage.match(/rgba?\([^)]*\)|#[0-9a-f]{3,8}/i); // gradient: use its first colour
         if (m) bg = m[0];
       }
-      const bw = parseFloat(cs.borderTopWidth) || 0;
-      const sides = ['Top', 'Right', 'Bottom', 'Left'].map((k) => ({ w: parseFloat(cs['border' + k + 'Width']) || 0, c: cs['border' + k + 'Color'], s: cs['border' + k + 'Style'] }));
+      const bw = (parseFloat(cs.borderTopWidth) || 0) * k;
+      const sides = ['Top', 'Right', 'Bottom', 'Left'].map((n) => ({ w: (parseFloat(cs['border' + n + 'Width']) || 0) * k, c: cs['border' + n + 'Color'], s: cs['border' + n + 'Style'] }));
       const uniform = sides.every((b) => b.w === sides[0].w && b.c === sides[0].c && b.s === sides[0].s);
       const anySide = sides.some((b) => b.w > 0 && b.s !== 'none' && !transparentColor(b.c));
       const hasBorder = uniform ? (bw > 0 && cs.borderTopStyle !== 'none' && !transparentColor(cs.borderTopColor)) : false;
@@ -1945,7 +2083,7 @@
           const ir = img.naturalWidth / img.naturalHeight;
           if (size === 'contain') { if (w / h > ir) { dh = h; dw = h * ir; } else { dw = w; dh = w / ir; } }
           else if (size === 'cover') { if (w / h > ir) { dw = w; dh = w / ir; } else { dh = h; dw = h * ir; } }
-          else if (size === 'auto' || size === 'auto auto') { dw = Math.min(w, img.naturalWidth * sx); dh = dw / ir; }
+          else if (size === 'auto' || size === 'auto auto') { dw = Math.min(w, img.naturalWidth * k * sx); dh = dw / ir; }
           const pos = (cs.backgroundPosition || '50% 50%').split(' ');
           const frac = (v) => v.endsWith('%') ? parseFloat(v) / 100 : (v === 'center' ? 0.5 : v === 'right' || v === 'bottom' ? 1 : 0);
           ctx.save(); boxPath(r, cs); ctx.clip();
@@ -1966,17 +2104,17 @@
         const colors = cs.boxShadow.match(/rgba?\([^)]*\)|#[0-9a-f]{3,8}/gi) || [];
         const light = colors.find((c) => /255|#f|#e|#d/i.test(c)) || 'rgba(255,255,255,0.8)';
         const dark = colors.find((c) => c !== light) || 'rgba(0,0,0,0.5)';
-        const x = r.left * sx, y = r.top * sy, w = r.width * sx, h = r.height * sy, t = Math.max(1, 2 * sx);
+        const x = r.left * sx, y = r.top * sy, w = r.width * sx, h = r.height * sy, t = Math.max(1, 2 * k * sx);
         ctx.fillStyle = light; ctx.fillRect(x, y, w, t); ctx.fillRect(x, y, t, h);
         ctx.fillStyle = dark; ctx.fillRect(x, y + h - t, w, t); ctx.fillRect(x + w - t, y, t, h);
       }
     };
     const setFont = (cs) => {
       const size = parseFloat(cs.fontSize) || 14;
-      ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + (size * sy).toFixed(1) + 'px ' + cs.fontFamily;
+      ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + (size * k * sy).toFixed(1) + 'px ' + cs.fontFamily;
       ctx.fillStyle = cs.color;
       ctx.textBaseline = 'middle';
-      return size;
+      return size * k;
     };
     const caseOf = (cs, str) => cs.textTransform === 'uppercase' ? str.toUpperCase() : cs.textTransform === 'lowercase' ? str.toLowerCase() : str;
     const paintText = (node, cs, alpha) => {
@@ -2014,24 +2152,23 @@
       nodes++;
       const visible = cs.visibility !== 'hidden' && cs.visibility !== 'collapse';
       const r = el.getBoundingClientRect();
-      const onScreen = r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight;
+      const onScreen = r.right > S.x && r.bottom > S.y && r.left < S.x + S.w && r.top < S.y + S.h;
       const tag = el.tagName;
       if (visible && onScreen && r.width > 0 && r.height > 0 && el !== document.body && el !== document.documentElement && !isGameCanvas(el)) {
         // In the HUD, full-width bars / tall columns are layout containers: look inside them for the widgets.
-        const container = hud && !inWidget && (big(r) || r.width > 0.45 * innerWidth || r.height > 0.6 * innerHeight);
-        if (!(hud && (big(r) || container))) paintBox(r, cs, a);
-        if (hud && !inWidget && !container && r.width >= 3 && r.height >= 3) { widgets.push({ x: r.left, y: r.top, w: r.width, h: r.height }); inWidget = true; }
+        // In a match, full-screen containers (the gray page behind the game view) are see-through.
+        if (!(hud && big(r))) paintBox(r, cs, a);
         ctx.globalAlpha = a;
         if (tag === 'IMG' && !menu.noImages && el.complete && el.naturalWidth) {
           const src = el.currentSrc || el.src;
           const img = sameOrigin(src) ? el : imageFor(src);
           if (img) drawSource(img, img, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
-        } else if ((tag === 'svg' || tag === 'SVG') && !menu.noImages && r.width * r.height < 0.25 * innerWidth * innerHeight) {
+        } else if ((tag === 'svg' || tag === 'SVG') && !menu.noImages && r.width * r.height < 0.25 * S.w * S.h) {
           const img = svgImage(el, cs);
           if (img) drawSource(img, img, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
         } else if (tag === 'VIDEO' && !menu.noImages && el.readyState >= 2 && sameOrigin(el.currentSrc || el.src)) {
           drawSource(el, el, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
-        } else if (tag === 'CANVAS' && !menu.noImages && !big(r)) {
+        } else if (tag === 'CANVAS' && !menu.noImages && !big(r) && !(el.width * el.height > 0.3 * winSize().w * winSize().h)) {
           drawSource(el, el, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
         } else if ((tag === 'INPUT' || tag === 'TEXTAREA') && el.type === 'range') {
           const min = Number(el.min) || 0, max = Number(el.max) || 100, v = Number(el.value);
@@ -2046,7 +2183,7 @@
           if (text) {
             setFont(cs);
             if (!el.value && tag !== 'SELECT') ctx.globalAlpha = a * 0.5;
-            ctx.fillText(text.slice(0, 200), (r.left + (parseFloat(cs.paddingLeft) || 4)) * sx, (r.top + r.height / 2) * sy);
+            ctx.fillText(text.slice(0, 200), (r.left + (parseFloat(cs.paddingLeft) || 4) * k) * sx, (r.top + r.height / 2) * sy);
           }
         }
       }
@@ -2056,14 +2193,7 @@
       if (clip) { ctx.save(); ctx.beginPath(); ctx.rect(r.left * sx, r.top * sy, r.width * sx, r.height * sy); ctx.clip(); }
       for (let child = el.firstChild; child; child = child.nextSibling) {
         if (child.nodeType === 1) walk(child, a, inWidget);
-        else if (child.nodeType === 3 && visible && onScreen) {
-          paintText(child, cs, a);
-          if (hud && !inWidget && child.nodeValue && child.nodeValue.trim()) {
-            range.selectNodeContents(child);
-            const tr = range.getBoundingClientRect();
-            if (tr.width > 0 && tr.height > 0) widgets.push({ x: tr.left - 2, y: tr.top - 2, w: tr.width + 4, h: tr.height + 4 });
-          }
-        }
+        else if (child.nodeType === 3 && visible && onScreen) paintText(child, cs, a);
       }
       if (clip) ctx.restore();
     };
@@ -2074,27 +2204,10 @@
     if (unverified.length) {
       try { ctx.getImageData(0, 0, 1, 1); for (const k of unverified) verified.add(k); }
       catch {
-        if (!menu.noImages) { menu.noImages = true; menu.full = null; warn('Menu panel: a cross-origin image blocked it; redrawing without images.'); return paintDom(menu); }
+        if (!menu.noImages) { menu.noImages = true; warn('Menu panel: a cross-origin image blocked it; redrawing without images.'); return paintDom(menu); }
       }
     }
-    menu.hudMap = null;
-    if (hud) {
-      const out = menu.ctx, W = menu.canvas.width, H = menu.canvas.height;
-      out.setTransform(1, 0, 0, 1, 0, 0);
-      out.globalAlpha = 1;
-      out.clearRect(0, 0, W, H);
-      const pull = Math.max(0.15, Math.min(1, (Number(config.hud.pull) || 0.5) / Math.max(uiW(), uiH()))), grow = Math.max(0.5, Math.min(3, Number(config.hud.grow) || 1.4));
-      const cx0 = innerWidth / 2, cy0 = innerHeight / 2, map = [];
-      for (const r of widgets) {
-        const w = r.w * grow, h = r.h * grow;
-        let x = cx0 + (r.x + r.w / 2 - cx0) * pull - w / 2, y = cy0 + (r.y + r.h / 2 - cy0) * pull - h / 2;
-        x = Math.max(0, Math.min(innerWidth - w, x)); y = Math.max(0, Math.min(innerHeight - h, y));
-        try { out.drawImage(canvas, r.x * sx, r.y * sy, r.w * sx, r.h * sy, x * sx, y * sy, w * sx, h * sy); } catch {}
-        map.push({ src: r, dst: { x, y, w, h } });
-      }
-      menu.hudMap = map;
-      menu.hudWidgets = widgets.length;
-    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     menu.nodes = nodes;
     menu.texture.needsUpdate = true;
   }
@@ -2145,12 +2258,12 @@
         if (Math.abs(diff) < 0.05) menu.catching = false;
       }
     }
-    const d = hud ? (Number(config.hud.distance) || 1.6) : (Number(config.menu.distance) || 1.4);
-    const base = hud ? (Number(config.hud.width) || 2.0) : (Number(config.menu.width) || 1.6);
-    const w = base * uiW(), h = base * menu.aspect * uiH();
+    const d = Number(config.screen.distance) || 2.0;
+    const w = Number(config.screen.width) || 2.5, h = w * menu.aspect;
     const panel = menu.panel;
     panel.scale.set(w, h, 1);
-    const drop = hud ? (Number(config.hud.drop) || 0) : (Number(config.menu.drop) || 0.15);
+    if (panel.material && panel.material.opacity !== uiOpacity()) panel.material.opacity = uiOpacity();
+    const drop = hud ? 0 : Math.min(0.25, Number(config.menu.drop) || 0.15);
     panel.position.set(head.x - Math.sin(menu.yaw) * d, head.y - drop, head.z - Math.cos(menu.yaw) * d);
     panel.rotation.set(hud ? 0 : -(Number(config.menu.tiltDeg) || 8) * Math.PI / 180, menu.yaw, 0, 'YXZ');
     panel.updateMatrixWorld(true);
@@ -2170,12 +2283,9 @@
         const t = -o.z / dz;
         const x = o.x + (p2.x - o.x) * t, y = o.y + (p2.y - o.y) * t;
         if (t > 0 && Math.abs(x) <= 0.5 && Math.abs(y) <= 0.5) {
-          let cx = (x + 0.5) * innerWidth, cy = (0.5 - y) * innerHeight;
-          if (menu.hudMap) { // the HUD moved widgets: map the point back to where the widget really is on the page
-            const m = menu.hudMap.find((e) => cx >= e.dst.x && cx <= e.dst.x + e.dst.w && cy >= e.dst.y && cy <= e.dst.y + e.dst.h);
-            if (m) { cx = m.src.x + (cx - m.dst.x) * m.src.w / m.dst.w; cy = m.src.y + (cy - m.dst.y) * m.src.h / m.dst.h; } else { cx = -1; cy = -1; }
-          }
-          const el = cx < 0 ? null : document.elementFromPoint(cx, cy);
+          const S = screenRect();
+          const cx = S.x + (x + 0.5) * S.w, cy = S.y + (0.5 - y) * S.h;
+          const el = document.elementFromPoint(cx, cy);
           if (hitInteractive(el)) {
             hit = { element: el, x: cx, y: cy };
             const world = panel.localToWorld(tmp.v2.set(x, y, 0.002));
@@ -2468,7 +2578,7 @@
         gl.enableVertexAttribArray(loc.p); gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 20, 0);
         gl.enableVertexAttribArray(loc.uv); gl.vertexAttribPointer(loc.uv, 2, gl.FLOAT, false, 20, 12);
         gl.uniformMatrix4fv(loc.mvp, false, mat4.mul(vpm, panelModel));
-        gl.uniform1f(loc.tex, 1); gl.uniform4f(loc.c, 1, 1, 1, 1);
+        gl.uniform1f(loc.tex, 1); gl.uniform4f(loc.c, 1, 1, 1, uiOpacity());
         gl.drawArrays(gl.TRIANGLES, 0, 6);
       }
       if (lineData.length) {
@@ -2509,8 +2619,8 @@
     const layer = new XRWebGLLayer(session, g.gl, { framebufferScaleFactor: scale });
     await session.updateRenderState({ baseLayer: layer });
     const space = await session.requestReferenceSpace('local');
-    const width = Math.max(512, Math.min(2048, Number(config.menu.resolution) || 1280));
-    const aspect = Math.min(1, Math.max(0.3, (innerHeight || 720) / (innerWidth || 1280)));
+    const width = Math.max(512, Math.min(2048, Number(config.menu.resolution) || 1600));
+    const aspect = screenAspect();
     const canvas = document.createElement('canvas');
     canvas.width = width; canvas.height = Math.round(width * aspect);
     const menu = { canvas, ctx: canvas.getContext('2d'), texture: { needsUpdate: false }, aspect, dirty: true, lastDraw: 0, draws: 0, drawMs: 0, nodes: 0, noImages: false, yaw: null };
@@ -2521,6 +2631,7 @@
     spoofFocus(true);
     state.pointerLockReleased = false;
     spoofPointerLock(true);
+    safe('virtual screen', () => applyVirtualScreen(true));
     try { state.menuObserver2 = new MutationObserver(() => { menu.dirty = true; }); state.menuObserver2.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {}
     session.addEventListener('end', () => endStandalone(sa));
     attachSelectEvents(session);
@@ -2539,6 +2650,7 @@
     state.uiHit = null;
     spoofFocus(false);
     spoofPointerLock(false);
+    safe('virtual screen', () => applyVirtualScreen(false));
     if (state.menuObserver2) { try { state.menuObserver2.disconnect(); } catch {} state.menuObserver2 = null; }
     const queue = state.rafQueue;
     state.rafQueue = new Map();
@@ -2603,7 +2715,7 @@
     if (Math.abs(diff) > (Number(config.menu.followDeg) || 35) * Math.PI / 180) menu.catching = true;
     if (menu.catching) { menu.yaw += diff * 0.12; if (Math.abs(diff) < 0.05) menu.catching = false; }
     if (sa.floorY === null) sa.floorY = hp.y - 1.6;
-    const d = Number(config.menu.distance) || 1.4, w = (Number(config.menu.width) || 1.6) * uiW(), h = (Number(config.menu.width) || 1.6) * menu.aspect * uiH();
+    const d = Number(config.screen.distance) || 2.0, w = Number(config.screen.width) || 2.5, h = w * menu.aspect;
     const cx = hp.x - Math.sin(menu.yaw) * d, cy = hp.y - (Number(config.menu.drop) || 0.15), cz = hp.z - Math.cos(menu.yaw) * d;
 
     // Laser from the right controller.
@@ -2623,7 +2735,8 @@
         const t = -lo[2] / ld[2];
         const x = lo[0] + ld[0] * t, y = lo[1] + ld[1] * t;
         if (t > 0 && Math.abs(x) <= w / 2 && Math.abs(y) <= h / 2) {
-          const clientX = (x / w + 0.5) * innerWidth, clientY = (0.5 - y / h) * innerHeight;
+          const S = screenRect();
+          const clientX = S.x + (x / w + 0.5) * S.w, clientY = S.y + (0.5 - y / h) * S.h;
           const el = document.elementFromPoint(clientX, clientY);
           if (hitInteractive(el)) { hit = { element: el, x: clientX, y: clientY }; ray.len = t; }
         }
@@ -2682,7 +2795,7 @@
       gl.vertexAttribPointer(loc.uv, 2, gl.FLOAT, false, 20, 12);
       gl.uniformMatrix4fv(loc.mvp, false, mat4.mul(vpm, panelModel));
       gl.uniform1f(loc.tex, 1);
-      gl.uniform4f(loc.c, 1, 1, 1, 1);
+      gl.uniform4f(loc.c, 1, 1, 1, uiOpacity());
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       if (hit && ray) {
         const p = [ray.o[0] + ray.dir[0] * ray.len, ray.o[1] + ray.dir[1] * ray.len, ray.o[2] + ray.dir[2] * ray.len];
@@ -2855,11 +2968,6 @@
       if (!down && state.triggerToUi) { state.triggerToUi = false; if (!state.selectReleased && state.uiPress) uiPress(false); state.selectReleased = false; return; }
       if (down ? state.uiHit : state.uiPress) { state.triggerToUi = down; uiPress(down); return; }
     }
-    // Aim-hand grip while pointing at a menu is for resizing it: don't send it to the game.
-    if (hand === config.aimHand && action.mouse === 2) {
-      if (down && state.uiHit) { state.gripToUi = true; return; }
-      if (!down && state.gripToUi) { state.gripToUi = false; return; }
-    }
     // Escape opens the game's pause menu, which many games do when the pointer is released.
     if (action.key === 'Escape' && down && config.spoofPointerLock && state.presenting) {
       state.pointerLockReleased = !state.pointerLockReleased;
@@ -2882,18 +2990,6 @@
   }
 
   // Short message at the top of the screen. It's part of the page, so it also shows on the floating HUD in the headset.
-  const uiDim = (v) => Math.max(0.5, Math.min(4, Number(v) || Number(config.uiScale) || 1.4));
-  function uiW() { return uiDim(config.uiWidth); }
-  function uiH() { return uiDim(config.uiHeight); }
-  // Point at a menu: right stick left/right = narrower/wider; with the right grip held, up/down = taller/shorter.
-  function resizeUi(key, amount) {
-    const now = key === 'uiWidth' ? uiW() : uiH();
-    const next = Math.round(Math.max(0.5, Math.min(4, now * (1 + amount))) * 100) / 100;
-    if (next === now) return;
-    config[key] = next;
-    clearTimeout(state.uiSaveTimer);
-    state.uiSaveTimer = setTimeout(() => { saveConfig(); toast('VR menu width ' + Math.round(uiW() * 100) + '% · height ' + Math.round(uiH() * 100) + '%'); }, 400);
-  }
   function toast(text) {
     whenBody(() => {
       let el = document.getElementById('fister-vr-toast');
@@ -2968,9 +3064,7 @@
       if (hand === config.aimHand) scroll = sy;
     }
     // Point at the menu and push the right stick up/down to scroll.
-    const gripHeld = !!state.buttonsDown.get(config.aimHand + '.squeeze');
-    if ((state.uiHit || state.uiResizing) && gripHeld && Math.abs(scroll) > 0.35) { state.uiResizing = true; resizeUi('uiHeight', -scroll * 0.005); }
-    else if (state.uiHit && Math.abs(scroll) > 0.3) uiScroll(scroll * 30);
+    if (state.uiHit && Math.abs(scroll) > 0.3) uiScroll(scroll * 30);
     // Hold both grips for one second: open/close the debug console (it appears on the menu panel).
     const both = state.buttonsDown.get('left.squeeze') && state.buttonsDown.get('right.squeeze');
     const nowMs = performance.now();
@@ -2987,12 +3081,6 @@
     }
     // With hand aim the mouse belongs to the aim, so turning always rotates your view (Vivecraft-style).
     const viewTurn = config.aimMode === 'hand' || config.turnMode === 'rig';
-    if (turn !== null && (state.uiHit || state.uiResizing) && Math.abs(turn) > 0.35) {
-      // Pointing at a menu: the turn stick resizes the panels instead of turning you.
-      state.uiResizing = true;
-      resizeUi('uiWidth', turn * 0.005);
-      turn = null;
-    } else if (state.uiResizing && (turn === null || Math.abs(turn) < 0.2) && !(gripHeld && Math.abs(scroll) > 0.2)) state.uiResizing = false;
     if (turn !== null && config.turnMode !== 'off' && viewTurn) {
       if (config.turnMode === 'smooth') {
         if (Math.abs(turn) > 0.15) state.rigTurn -= turn * 0.035;
@@ -3040,6 +3128,7 @@
     spoofFocus(true);
     state.pointerLockReleased = false;
     spoofPointerLock(true);
+    safe('virtual screen', () => applyVirtualScreen(true));
     setTimeout(() => reassertFocus('session start'), 100);
 
     state.redirectRaf = true;
@@ -3056,6 +3145,7 @@
     state.presenting = false;
     state.redirectRaf = false;
     spoofFocus(false);
+    safe('virtual screen', () => applyVirtualScreen(false));
     teardownMenu();
     spoofPointerLock(false);
     unlockFirstPerson();
@@ -3209,7 +3299,7 @@
       'Players: ' + (state.gameScene ? 'game scene' : state.lateScene ? 'map probe' : 'not found') + (state.reprobe ? ' (re-searching)' : '')
         + ' · local: ' + (player ? 'yes' : 'no'),
       'Aim: ' + config.aimMode + ' · learned ' + (state.aim.ratioX * 1000).toFixed(2) + ' mrad/px' + (state.aim.stuck > 30 ? ' · NOT RESPONDING' : ''),
-      'Menu panel: ' + (state.menu ? (state.overlayOk ? 'drawn directly (' + (state.overlayDraws || 0) + ' frames, ' + (state.overlayStatus || '') + ')' : 'three.js mesh' + (state.overlayStatus ? ' (direct: ' + state.overlayStatus + ')' : '')) + (state.menu.hudMap ? ' as HUD (' + state.menu.hudWidgets + ' widgets)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
+      'Menu panel: ' + (state.menu ? (state.overlayOk ? 'drawn directly (' + (state.overlayDraws || 0) + ' frames, ' + (state.overlayStatus || '') + ')' : 'three.js mesh' + (state.overlayStatus ? ' (direct: ' + state.overlayStatus + ')' : '')) + (state.vscreen ? ' · 1920x1080 screen' : '') + (hudMode() ? ' (HUD)' : '') + ' · ' + state.menu.draws + ' draws · ' + state.menu.nodes + ' elements · ' + state.menu.drawMs.toFixed(1) + ' ms/draw' : (state.menuProblem || 'not built yet'))
         + ' · laser: ' + (state.uiHit ? 'on ' + state.uiHit.element.tagName.toLowerCase() : 'off') + ' · mouse captured: ' + (document.pointerLockElement ? 'yes' : 'no'),
       'Input: keys to ' + describeEl(keyTarget()) + ' · focus ' + describeEl(document.activeElement) + ' · page focused ' + (nativeHasFocus.call(document) ? 'yes' : 'no')
         + ' · game locked ' + describeEl(state.lockTarget) + ' (' + (state.lockRequests || 0) + 'x) · keys held ' + ([...state.keysDown].join(' ') || 'none'),
@@ -3412,7 +3502,7 @@
       console.log(text);
       return out;
     },
-    _internals: { captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
+    _internals: { screenRect, applyVirtualScreen, captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
       lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, startStandalone, handOffStandalone, isMainRenderer, sceneHasBuildingBlocks, runDueTimers, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
   });
 

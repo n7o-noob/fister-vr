@@ -54,7 +54,7 @@ const server = http.createServer((req, res) => { const f = path.join(root, req.u
     await new Promise(r => setTimeout(r, 400));
     const ctx = m.canvas.getContext('2d'), sx = m.canvas.width / innerWidth;
     const px = (x, y) => [...ctx.getImageData(Math.round(x * sx), Math.round(y * sx), 1, 1).data];
-    return { summary: fisterVR._internals.liveSummary().find(l => l.startsWith('Menu panel')), map: fisterVR.state.menu.hudMap.map(e => [e.src, e.dst].map(r => [r.x, r.y, r.w, r.h].map(Math.round).join(','))), hudMode: fisterVR.state.gameplay && !fisterVR.state.pointerLockReleased, centerPixel: px(innerWidth / 2, innerHeight / 2), healthPixel: px(50, 20), laserOnHud: !!fisterVR.state.uiHit };
+    return { summary: fisterVR._internals.liveSummary().find(l => l.startsWith('Menu panel')), hudMode: fisterVR.state.gameplay && !fisterVR.state.pointerLockReleased, centerPixel: px(innerWidth / 2, innerHeight / 2), healthPixel: px(50, 20), laserOnHud: !!fisterVR.state.uiHit };
   });
   await page.evaluate(() => __xrMock.setRay('right', [0.25, 1.0, -0.3], [0, -0.3, -1]));
   await page.waitForTimeout(800);

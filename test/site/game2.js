@@ -67,6 +67,10 @@ class Game {
   }
   frame = () => {
     if (location.search.includes('norender') && !window.__started) { requestAnimationFrame(this.frame); return; } // main menu: no 3D yet
+    if (location.search.includes('emptymenu') && !window.__started) { // main menu drawn as a sky colour only (no meshes)
+      if (!this.emptyScene) { this.emptyScene = new THREE.Scene(); this.emptyScene.background = new THREE.Color(0x88bbee); }
+      this.renderer.render(this.emptyScene, this.menuCamera); requestAnimationFrame(this.frame); return;
+    }
     if (location.search.includes('rebuild') && this.frames === this.rebuildAt) this.rebuildPlayers();
     const me = this.players.get('me');
     me.mesh.rotation.y = this.yaw;

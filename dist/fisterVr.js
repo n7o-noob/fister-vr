@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.7.5
+// @version      0.7.6
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -408,12 +408,79 @@
 
     log('WebGLRenderer captured' + (isMainRenderer(renderer) ? ' (main game view)' : ' (small, not the game view)') + '; renderer.xr.enabled = true.');
     whenBody(ensureVrButton);
-    if (state.standalone && isMainRenderer(renderer)) handOffStandalone(renderer);
+    // (hand-off from menu-only VR happens in the render hook, once the game draws a scene we can build objects in)
   }
 
   // ---------------------------------------------------------------------------------------------------------
   // rAF redirection: during an immersive session the game's frames must run inside XRSession rAF.
   // ---------------------------------------------------------------------------------------------------------
+  // In VR a game's "request full screen" or "resume audio" can fail or hang without a real click; neither matters in
+  // the headset, so don't let them block (e.g. a join-lobby button awaiting them).
+  const nativeRequestFullscreen = Element.prototype.requestFullscreen;
+  if (nativeRequestFullscreen) {
+    Element.prototype.requestFullscreen = function requestFullscreen(...args) {
+      if (state.presenting) return Promise.resolve();
+      return nativeRequestFullscreen.apply(this, args);
+    };
+  }
+  for (const Ctx of [root.AudioContext, root.webkitAudioContext]) {
+    if (!Ctx || !Ctx.prototype.resume || Ctx.prototype.__fisterVrResume) continue;
+    const nativeResume = Ctx.prototype.resume;
+    Ctx.prototype.__fisterVrResume = true;
+    Ctx.prototype.resume = function resume(...args) {
+      const p = nativeResume.apply(this, args);
+      if (!state.presenting) return p;
+      return Promise.race([p, new Promise((r) => setTimeout(r, 400))]);
+    };
+  }
+
+  // Timers: with the page hidden behind VR the browser slows setTimeout/setInterval to about once a second, so menus,
+  // loading and lobby lists stall. While in VR we also run due timers every headset frame.
+  const nativeSetTimeout = root.setTimeout.bind(root), nativeClearTimeout = root.clearTimeout.bind(root);
+  const nativeSetInterval = root.setInterval.bind(root), nativeClearInterval = root.clearInterval.bind(root);
+  const timers = new Map();
+  let timerSeq = 0x50000000;
+  function runTimer(id, early) {
+    const t = timers.get(id);
+    if (!t) return;
+    const now = performance.now();
+    if (t.interval && !early && now < t.due - 1) return; // native interval tick for a period we already ran
+    if (t.interval) t.due = now + t.interval;
+    else { timers.delete(id); if (early) nativeClearTimeout(t.native); }
+    try { t.fn.apply(root, t.args); } catch (error) { record('page-error', ['Timer error:', error]); nativeConsole.error(error); }
+  }
+  root.setTimeout = function setTimeout(fn, delay, ...args) {
+    if (typeof fn !== 'function') return nativeSetTimeout(fn, delay, ...args);
+    const id = ++timerSeq, d = Math.max(0, Number(delay) || 0);
+    const t = { fn, args, due: performance.now() + d, interval: 0, native: 0 };
+    timers.set(id, t);
+    t.native = nativeSetTimeout(() => runTimer(id, false), d);
+    return id;
+  };
+  root.setInterval = function setInterval(fn, delay, ...args) {
+    if (typeof fn !== 'function') return nativeSetInterval(fn, delay, ...args);
+    const id = ++timerSeq, d = Math.max(4, Number(delay) || 0);
+    const t = { fn, args, due: performance.now() + d, interval: d, native: 0 };
+    timers.set(id, t);
+    t.native = nativeSetInterval(() => runTimer(id, false), d);
+    return id;
+  };
+  const clearAny = function clear(id) {
+    const t = timers.get(id);
+    if (t) { timers.delete(id); if (t.interval) nativeClearInterval(t.native); else nativeClearTimeout(t.native); return; }
+    nativeClearTimeout(id); nativeClearInterval(id);
+  };
+  root.clearTimeout = clearAny;
+  root.clearInterval = clearAny;
+  function runDueTimers() {
+    if (!state.presenting || !timers.size) return;
+    const now = performance.now();
+    let budget = 200;
+    for (const [id, t] of timers) {
+      if (t.due <= now) { runTimer(id, true); if (--budget <= 0) break; }
+    }
+  }
+
   const nativeRaf = root.requestAnimationFrame.bind(root);
   const nativeCaf = root.cancelAnimationFrame.bind(root);
   root.requestAnimationFrame = function requestAnimationFrame(callback) {
@@ -433,6 +500,7 @@
     try { xrFrameBody(renderer, time, frame); } finally { state.inXrFrame = false; }
   }
   function xrFrameBody(renderer, time, frame) {
+    safe('timers', runDueTimers);
     state.xrTarget = renderer.getRenderTarget();
     state.mainRendered = false;
     if (time - state.focusTimer > 2000) {
@@ -496,6 +564,12 @@
   }
 
   function renderThroughVr(renderer, originalRender, scene, camera) {
+    if (state.standalone && !state.standalone.handedOff && isMainRenderer(renderer) && scene && scene.isScene
+        && camera && camera.isPerspectiveCamera && sceneHasBuildingBlocks(scene)) {
+      noteRender(renderer, scene, camera);
+      handOffStandalone(renderer);
+      return originalRender.call(renderer, scene, camera);
+    }
     if (!state.presenting || renderer !== state.renderer || !renderer.xr.isPresenting) {
       noteRender(renderer, scene, camera);
       return originalRender.call(renderer, scene, camera);
@@ -635,8 +709,23 @@
   }
 
   // Grab Three.js constructors from live objects: the game's copy of three.js is a private ES module.
+  // Does this scene contain what we need to build our own objects (a Mesh with a plain Float32 position attribute)?
+  function sceneHasBuildingBlocks(scene) {
+    let ok = false;
+    try {
+      scene.traverse((node) => {
+        if (ok || node.isMesh !== true) return;
+        const pos = node.geometry && node.geometry.attributes && node.geometry.attributes.position;
+        if (pos && pos.isBufferAttribute === true && pos.isInterleavedBufferAttribute !== true && pos.array instanceof Float32Array) ok = true;
+      });
+    } catch {}
+    return ok;
+  }
+
   function harvestClasses(scene, camera) {
-    if (state.classes) return state.classes;
+    // A previous scene (loading screen, empty menu) may not have had everything. Try again every 30 frames.
+    if (state.classes && state.classes.Mesh && state.classes.Attribute) return state.classes;
+    if (state.classes && ((state.harvestTries = (state.harvestTries || 0) + 1) % 30 !== 0)) return state.classes;
     const Vector3 = camera.position.constructor;
     const Quaternion = camera.quaternion.constructor;
     const Euler = camera.rotation.constructor;
@@ -671,7 +760,9 @@
 
     const Matrix4 = camera.matrixWorld.constructor;
     const PerspectiveCamera = camera.isPerspectiveCamera ? camera.constructor : null;
-    state.classes = { Vector3, Quaternion, Euler, Object3D, Mesh, Attribute, PerspectiveCamera, Matrix4 };
+    const previous = state.classes || {};
+    state.classes = { ...previous, Vector3, Quaternion, Euler, Object3D, Mesh: Mesh || previous.Mesh || null, Attribute: Attribute || previous.Attribute || null, PerspectiveCamera, Matrix4 };
+    if (state.classes.Mesh && state.classes.Attribute && !(previous.Mesh && previous.Attribute) && state.rig) safe('controller boxes', addMissingBoxes);
     log('Three.js classes harvested:', Object.fromEntries(Object.entries(state.classes).map(([k, v]) => [k, !!v])));
     return state.classes;
   }
@@ -898,6 +989,25 @@
     geometry.setAttribute('position', new Attribute(new Float32Array(out), 3));
     geometry.computeBoundingSphere();
     return geometry;
+  }
+
+  function makeBox(index) {
+    const C = state.classes;
+    const box = new C.Mesh();
+    box.geometry = boxGeometry(...config.boxSize);
+    if (box.material.color) box.material.color.setHex(config.boxColors.none);
+    box.name = 'fister-vr-controller-box-' + index;
+    showOnAllLayers(box);
+    return box;
+  }
+  function addMissingBoxes() {
+    if (!config.controllerBoxes || !state.classes || !state.classes.Mesh || !state.classes.Attribute) return;
+    for (const entry of state.controllers) {
+      if (entry.box) continue;
+      entry.box = makeBox(entry.index);
+      entry.group.add(entry.box);
+      if (entry.box.material.color) entry.box.material.color.setHex(config.boxColors[entry.handedness] ?? config.boxColors.none);
+    }
   }
 
   function setupControllers() {
@@ -1797,6 +1907,7 @@
     spoofFocus(true);
     try { state.menuObserver2 = new MutationObserver(() => { menu.dirty = true; }); state.menuObserver2.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {}
     session.addEventListener('end', () => endStandalone(sa));
+    attachSelectEvents(session);
     session.requestAnimationFrame((t, f) => standaloneFrame(sa, t, f));
     log('Menu-only VR started (no game 3D yet). It switches to the game view as soon as the game renders.');
     setStatus('In VR (menus) · switches to the game when it starts rendering');
@@ -1842,6 +1953,7 @@
     if (sa.handedOff || state.standalone !== sa) return;
     sa.session.requestAnimationFrame((t, f) => standaloneFrame(sa, t, f));
     sa.frames++;
+    safe('timers', runDueTimers);
     // Let the page (and the game's loop, if it runs) do its frame work inside the XR frame.
     const queue = state.rafQueue;
     state.rafQueue = new Map();
@@ -2057,12 +2169,34 @@
     target.dispatchEvent(new MouseEvent('mousemove', init));
   }
 
+  // WebXR 'select' events count as a user action, so clicks done inside them may open full screen, start audio or
+  // capture the mouse, which a lobby/join button may need. Menu clicks with the aim hand are done here.
+  function attachSelectEvents(session) {
+    if (!session || session.__fisterVrSelect) return;
+    session.__fisterVrSelect = true;
+    session.addEventListener('selectstart', (event) => {
+      if (!event.inputSource || event.inputSource.handedness !== config.aimHand || !state.uiHit) return;
+      state.triggerToUi = true;
+      safe('menu click', () => uiPress(true));
+    });
+    session.addEventListener('selectend', (event) => {
+      if (!event.inputSource || event.inputSource.handedness !== config.aimHand || !state.triggerToUi) return;
+      safe('menu click', () => uiPress(false));
+      state.selectReleased = true;
+    });
+  }
+
   function runAction(action, down, frame, hand) {
     if (!action) return;
     if (action === 'recenter') { if (down) { recenter(frame); reassertFocus('recenter'); } return; }
     if (action === 'refocus') { if (down) reassertFocus('button'); return; }
     // Right trigger on the menu panel clicks the menu instead of punching.
-    if (hand === config.aimHand && action.mouse === 0 && (down ? state.uiHit : state.uiPress)) { uiPress(down); return; }
+    if (hand === config.aimHand && action.mouse === 0) {
+      // Already handled by the select event? Then just consume the gamepad edge.
+      if (down && state.triggerToUi) return;
+      if (!down && state.triggerToUi) { state.triggerToUi = false; if (!state.selectReleased && state.uiPress) uiPress(false); state.selectReleased = false; return; }
+      if (down ? state.uiHit : state.uiPress) { state.triggerToUi = down; uiPress(down); return; }
+    }
     // Escape opens the game's pause menu, which many games do when the pointer is released.
     if (action.key === 'Escape' && down && config.spoofPointerLock && state.presenting) {
       state.pointerLockReleased = !state.pointerLockReleased;
@@ -2165,6 +2299,7 @@
   // Session lifecycle
   // ---------------------------------------------------------------------------------------------------------
   function onSessionStart(renderer) {
+    attachSelectEvents(renderer.xr.getSession());
     state.renderer = renderer;
     const main = pickMain();
     state.gameCamera = main.camera || state.gameCamera;
@@ -2275,8 +2410,14 @@
     const sessionInit = { optionalFeatures: ['local-floor', 'bounded-floor'] };
 
     async function onSessionStarted(session) {
-      let { renderer } = pickMain();
+      let { renderer, camera } = pickMain();
       if (renderer && !isMainRenderer(renderer)) renderer = [...state.renderers].find(isMainRenderer) || null;
+      // Only go straight to the game view if the game is drawing a scene we can put the menu panel into.
+      if (renderer) {
+        const entry = camera && state.cameraStats.get(camera);
+        const scene = entry ? entry.scene : null;
+        if (!scene || !sceneHasBuildingBlocks(scene)) { log('Game scene not ready for VR objects yet; starting menu-only VR.'); renderer = null; }
+      }
       session.addEventListener('end', onSessionEnded);
       button.textContent = 'EXIT VR';
       currentSession = session;
@@ -2462,7 +2603,7 @@
     // Paste the output of this to get exact game hook names wired in.
     dump() {
       const gs = gameScene();
-      const out = { version: '0.7.5', userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
+      const out = { version: '0.7.6', userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
         gameSceneCaptured: !!state.gameScene, playersFound: !!(gs && gs.players), localPlayerFound: !!localPlayer(),
         renderers: state.renderers.size, camerasSeen: state.cameraStats.size,
         menuPanel: state.menu ? { draws: state.menu.draws, elements: state.menu.nodes, msPerDraw: +state.menu.drawMs.toFixed(1) } : (state.menuProblem || 'not built yet'),
@@ -2486,9 +2627,9 @@
       return out;
     },
     _internals: { captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
-      lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, startStandalone, handOffStandalone, isMainRenderer, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
+      lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, startStandalone, handOffStandalone, isMainRenderer, sceneHasBuildingBlocks, runDueTimers, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
   });
 
   whenBody(ensureVrButton); // available right away, even before the game draws anything 3D
-  log('v0.7.5 loaded.');
+  log('v0.7.6 loaded.');
 })();

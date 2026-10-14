@@ -2,6 +2,29 @@
 
 Context for anyone (human or AI) continuing work on Fister VR. Current version: see `@version` in `src/fister-vr.js`.
 
+## Start here (state as of v0.9.10)
+
+- **Working with the user:**
+  - They test on a real Quest 2 and send videos, screenshots and **COPY LOG** reports. COPY LOG is the button next to VR INFO; the "Menu panel" and "Aim" lines plus the log are the key diagnostics.
+  - Every change is only verified against the stand-in games in `test/`. Say so when reporting.
+- **Workflow:**
+  1. Edit `src/fister-vr.js` (and `site/page-template.html` / `qol/FisterQoL.user.template.js` for settings UIs).
+  2. Bump `@version` and `const VERSION`.
+  3. Run `node tools/build.cjs`, then the tests.
+  4. Commit as n7o-noob, push to main. CI rebuilds and Pages deploys.
+  5. Tell the user to re-copy the bookmarklet once the setup page footer shows the new version.
+- **Tests:** `cd test; NODE_PATH=/opt/node-tools/node_modules PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node runN.cjs`.
+  - They need `three.module.js` and `three.core.js` in `test/site/` (gitignored; copy them from an npm `three` build).
+  - The full suite is run6–20 and run23–29. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
+  - Don't overwrite existing test numbers; another chat also adds tests. Use the next free number and port.
+- **Reference code:** the user's `fister-community-server.zip` (server + `dist/shared/gameplay`, no client/HUD code) was used for the shoulder-aim origin and the `isEmoting` field. It isn't in the repo; ask the user to re-upload it if needed.
+- **Open / unverified on the real game:**
+  - Does the in-match HUD now show? (v0.9.6 projection-layer drawing plus the v0.9.9 1920x1080 virtual screen.) Does Fister's UI lay out correctly on the virtual screen (vw/vh rewrite, media rules, spoofed `innerWidth`)?
+  - Is E the emote wheel key, and does clicking pick an emote? Which emote fields does the client set?
+  - Aim accuracy after the v0.9.10 fixes (jumps, air kicks, held items).
+  - Held items (`ITEM_KEYS`, v0.8.0+): the user reported many still missing or wrong at v0.7.9. Not re-checked since.
+  - The three.js-built panel never rendered on the Quest; the cause is unknown. Direct WebGL drawing (`drawOverlay`) is used instead.
+
 ## Target and constraints
 
 - **Main target:** standalone Meta Quest 2, Quest Browser, run as a **bookmarklet** on fister.fun. No PC, no SteamVR (the owner's SteamVR doesn't connect; Virtual Desktop runs but can't enter VR mode).

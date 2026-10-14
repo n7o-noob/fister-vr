@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.8.0
+// @version      0.8.1
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.8.0';
+  const VERSION = '0.8.1';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -73,6 +73,10 @@
     // where the ray meets the ground, or this many metres out. A line from the hand shows that ray.
     aimDistance: 10,
     aimLaser: true,
+    // Where the game's aim ray starts: 'camera' (its third-person camera's crosshair, Fister's default) or 'body'.
+    aimOrigin: 'camera',
+    // In-match HUD panel (health, style, scoreboard): distance and width in metres, and how far below eye level.
+    hud: { distance: 1.6, width: 2.0, drop: 0 },
     aimGain: 0.6,                 // fraction of the remaining angle corrected per frame
     aimDeadzoneDeg: 0.4,
     aimPitch: true,
@@ -1470,9 +1474,72 @@
       const hit = (t.f.y - t.o.y) / t.d.y;
       if (hit > 0.3 * scale && hit < dist) dist = hit;
     }
+    // Walls, blocks, other players: whatever the ray meets first.
+    const wall = safe('aim raycast', () => raycastWorld(t.o, t.d, dist, 0.3 * scale));
+    if (typeof wall === 'number' && wall < dist) dist = wall;
     t.p.copy(t.o).addScaledVector(t.d, dist);
     state.aimDist = dist / scale;
     return t.p;
+  }
+  // Cheap world ray test against boxes around the arena's meshes (refreshed every ~1.5 s; other players every frame).
+  function raycastWorld(o, d, maxDist, minDist) {
+    const scene = state.threeScene;
+    if (!scene || !state.classes) return null;
+    const now = performance.now();
+    const C = state.classes;
+    const cache = state.rayCache || (state.rayCache = { at: 0, boxes: [], scene: null, v: new C.Vector3(), m: null });
+    const me = localPlayer();
+    const players = (() => { const gs = gameScene(); const p = gs && gs.players; try { return p && typeof p.values === 'function' ? [...p.values()] : []; } catch { return []; } })();
+    if (now - cache.at > 1500 || cache.scene !== scene) {
+      cache.at = now; cache.scene = scene; cache.boxes = [];
+      const skip = new Set([state.rig]);
+      for (const p of players) for (const k of ['mesh', 'avatarVisualRoot', 'avatarFlipPivot']) if (p && p[k] && p[k].isObject3D) skip.add(p[k]);
+      const v = cache.v;
+      const walk = (node) => {
+        if (skip.has(node) || node.visible === false) return;
+        const g = node.geometry;
+        if (node.isMesh && !node.isSkinnedMesh && g && g.attributes && g.attributes.position && !(node.material && node.material.transparent && node.material.opacity < 0.5)) {
+          if (!g.boundingBox && typeof g.computeBoundingBox === 'function') { try { g.computeBoundingBox(); } catch {} }
+          const b = g.boundingBox;
+          if (b && Number.isFinite(b.min.x)) {
+            const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+            for (let i = 0; i < 8; i++) {
+              v.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).applyMatrix4(node.matrixWorld);
+              const c = [v.x, v.y, v.z];
+              for (let k = 0; k < 3; k++) { if (c[k] < min[k]) min[k] = c[k]; if (c[k] > max[k]) max[k] = c[k]; }
+            }
+            // Skip huge boxes (sky, the ground) and specks; the ground is handled as a plane.
+            const size = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+            if (size > 0.05 && size < 200) cache.boxes.push([min, max]);
+          }
+        }
+        for (const child of node.children) walk(child);
+      };
+      walk(scene);
+    }
+    const hitBox = (min, max) => {
+      let t0 = minDist, t1 = maxDist;
+      const oa = [o.x, o.y, o.z], da = [d.x, d.y, d.z];
+      for (let k = 0; k < 3; k++) {
+        if (Math.abs(da[k]) < 1e-9) { if (oa[k] < min[k] || oa[k] > max[k]) return Infinity; continue; }
+        let a = (min[k] - oa[k]) / da[k], b = (max[k] - oa[k]) / da[k];
+        if (a > b) { const x = a; a = b; b = x; }
+        if (a > t0) t0 = a; if (b < t1) t1 = b;
+        if (t0 > t1) return Infinity;
+      }
+      return t0;
+    };
+    let best = Infinity;
+    for (const [min, max] of cache.boxes) { const t = hitBox(min, max); if (t < best) best = t; }
+    // Other players (they move): a rough box around each body.
+    const v = cache.v;
+    for (const p of players) {
+      if (!p || p === me || !p.mesh || !p.mesh.isObject3D) continue;
+      p.mesh.getWorldPosition(v);
+      const t = hitBox([v.x - 0.5, v.y, v.z - 0.5], [v.x + 0.5, v.y + 2.2, v.z + 0.5]);
+      if (t < best) best = t;
+    }
+    return best;
   }
   function updateAimLaser() {
     const entry = aimEntry();
@@ -1501,7 +1568,8 @@
     const target = aimTarget(entry);
     // Direction from your body (where the game's aim starts) to the spot your hand points at.
     const player = localPlayer();
-    const from = player && player.head && player.head.isObject3D ? player.head.getWorldPosition(tmp.v4) : gameCamera.getWorldPosition(tmp.v4);
+    const from = config.aimOrigin === 'body' && player && player.head && player.head.isObject3D
+      ? player.head.getWorldPosition(tmp.v4) : gameCamera.getWorldPosition(tmp.v4);
     tmp.v3.subVectors(target, from);
     if (tmp.v3.lengthSq() < 1e-6) { entry.group.getWorldQuaternion(tmp.q3); tmp.v3.set(0, 0, -1).applyQuaternion(tmp.q3); }
     tmp.v3.normalize();
@@ -1688,8 +1756,12 @@
   }
   const transparentColor = (c) => !c || c === 'transparent' || /rgba\([^)]*,\s*0(\.0+)?\)$/.test(c);
 
+  // In a match (no menu open) the panel is a HUD: only the game's overlays (health, style, scoreboard, charge bar),
+  // see-through, without the full-screen containers behind the game canvas (they painted a big gray slab).
+  const hudMode = () => !!(state.gameplay && !state.ragdoll && !state.pointerLockReleased);
   function paintDom(menu) {
     const { canvas, ctx } = menu;
+    const hud = hudMode();
     const W = canvas.width, H = canvas.height, sx = W / innerWidth, sy = H / innerHeight;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
@@ -1807,7 +1879,7 @@
       const onScreen = r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight;
       const tag = el.tagName;
       if (visible && onScreen && r.width > 0 && r.height > 0 && el !== document.body && el !== document.documentElement && !isGameCanvas(el)) {
-        paintBox(r, cs, a);
+        if (!(hud && big(r))) paintBox(r, cs, a);
         ctx.globalAlpha = a;
         if (tag === 'IMG' && !menu.noImages && el.complete && el.naturalWidth) {
           const src = el.currentSrc || el.src;
@@ -1862,7 +1934,11 @@
   }
 
   function hitInteractive(el) {
-    return !!el && el !== document.body && el !== document.documentElement && !isGameCanvas(el) && !isOurs(el);
+    if (!el || el === document.body || el === document.documentElement || isGameCanvas(el) || isOurs(el)) return false;
+    if (!hudMode()) return true;
+    const control = el.closest && el.closest('button, a[href], input, select, textarea, label, summary, [role="button"], [role="tab"], [role="menuitem"], [onclick]');
+    if (control) return true;
+    try { return getComputedStyle(el).cursor === 'pointer'; } catch { return false; }
   }
 
   function updateMenu() {
@@ -1872,6 +1948,7 @@
     // Redraw: on change (capped), at least once a second for things that animate without DOM changes.
     // Adaptive: never spend more than ~8% of the time painting (a 4 ms paint allows ~12/s, a 15 ms paint ~5/s).
     const inMatch = state.gameplay && !state.uiHit && !state.pointerLockReleased;
+    if (menu.wasHud !== hudMode()) { menu.wasHud = hudMode(); menu.dirty = true; menu.lastDraw = 0; }
     const minGap = Math.max(1000 / Math.max(1, Number(config.menu.maxFps) || 12), (menu.drawMs || 0) * (inMatch ? 25 : 12));
     if ((menu.dirty && now - menu.lastDraw > minGap) || now - menu.lastDraw > (inMatch ? 3000 : 1000)) {
       menu.dirty = false;
@@ -1892,16 +1969,23 @@
     const headYaw = tmp.e.y;
     if (menu.yaw === null) menu.yaw = headYaw;
     const diff = wrapAngle(headYaw - menu.yaw);
-    const follow = (Number(config.menu.followDeg) || 35) * Math.PI / 180;
-    if (Math.abs(diff) > follow) menu.catching = true;
-    if (menu.catching) {
-      menu.yaw += diff * 0.12;
-      if (Math.abs(diff) < 0.05) menu.catching = false;
+    const hud = hudMode();
+    if (hud) { menu.yaw += diff * 0.2; menu.catching = false; } // HUD: stays in front of your face, gently smoothed
+    else {
+      const follow = (Number(config.menu.followDeg) || 35) * Math.PI / 180;
+      if (Math.abs(diff) > follow) menu.catching = true;
+      if (menu.catching) {
+        menu.yaw += diff * 0.12;
+        if (Math.abs(diff) < 0.05) menu.catching = false;
+      }
     }
-    const d = Number(config.menu.distance) || 1.4;
+    const d = hud ? (Number(config.hud.distance) || 1.6) : (Number(config.menu.distance) || 1.4);
+    const w = hud ? (Number(config.hud.width) || 2.0) : (Number(config.menu.width) || 1.6);
     const panel = menu.panel;
-    panel.position.set(head.x - Math.sin(menu.yaw) * d, head.y - (Number(config.menu.drop) || 0.15), head.z - Math.cos(menu.yaw) * d);
-    panel.rotation.set(-(Number(config.menu.tiltDeg) || 8) * Math.PI / 180, menu.yaw, 0, 'YXZ');
+    panel.scale.set(w, w * menu.aspect, 1);
+    const drop = hud ? (Number(config.hud.drop) || 0) : (Number(config.menu.drop) || 0.15);
+    panel.position.set(head.x - Math.sin(menu.yaw) * d, head.y - drop, head.z - Math.cos(menu.yaw) * d);
+    panel.rotation.set(hud ? 0 : -(Number(config.menu.tiltDeg) || 8) * Math.PI / 180, menu.yaw, 0, 'YXZ');
     panel.updateMatrixWorld(true);
 
     // Laser from the right hand.

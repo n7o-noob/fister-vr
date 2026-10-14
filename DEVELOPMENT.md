@@ -106,6 +106,15 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.8.1
+
+- **Aim origin is the game camera** (`aimOrigin: 'camera'`). Fister's aim follows its third-person camera's crosshair, about 5.5 m behind the head; the green aim line runs from the body to where that crosshair hits.
+  - The hand's target comes from a ground-plane test plus `raycastWorld`. That function ray-tests world-space boxes around scene meshes (refreshed every 1.5 s) and a rough box around each other player.
+- **HUD mode** (`hudMode()`: in gameplay, not ragdolled, no menu open):
+  - The painter skips backgrounds of boxes covering more than half the screen (the gray slab).
+  - The panel follows the head closely at eye level (`config.hud`).
+  - The laser only counts real controls as hits. Before, pointing ahead "hit" the gray container, which paused the hand aim: a big part of the "aim is off" report.
+
 ## v0.8.0
 
 - **Real item names**, from the user's 0.7.9 debug report (`dump()` lists the local player's fields):

@@ -106,6 +106,17 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.2: save-clip button feedback
+
+- User report: pressing the save-clip button did nothing. There was no feedback, and older saved settings could
+  hold `right.thumbstick: null`, overriding the new default. Their 0.7.9 debug dump also showed
+  `fister-clip-recording: "false"` (the game's clip recording off, so its Save clip key has nothing to save).
+- Config load gives `right.thumbstick` the `'clip'` action when it is null, unless `clipButtonChosen` is saved
+  (QoL > VR sets it) or another button already has `'clip'`.
+- `toast()`: a short message at the top of the page (also painted onto the HUD panel): "Saving clip (key)",
+  "Clip recording is off ...", "No Save clip key found ...", or "Saving clips needs FisterQoL ...".
+- QoL > VR shows "Game clip recording: on/OFF" next to the found key.
+
 ## v0.9.0 – v0.9.1: FisterQoL option and VR clips
 
 - **Setup page option "What the bookmark loads":** Fister VR only, or Fister VR + FisterQoL.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.9.1
+// @version      0.9.2
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.9.1';
+  const VERSION = '0.9.2';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -134,6 +134,10 @@
     const merged = { ...DEFAULT_CONFIG, ...saved, ...baked };
     merged.firstPerson = { ...DEFAULT_CONFIG.firstPerson, ...(saved.firstPerson || {}), ...(baked.firstPerson || {}) };
     merged.buttons = { ...DEFAULT_CONFIG.buttons, ...(saved.buttons || {}), ...(baked.buttons || {}) };
+    // Before 0.9 the right stick click did nothing, and that `null` may be in saved settings. Give it the save-clip
+    // action unless you picked something for it (QoL > VR sets clipButtonChosen) or another button already has it.
+    if (!saved.clipButtonChosen && !(baked.buttons && 'right.thumbstick' in baked.buttons) && merged.buttons['right.thumbstick'] == null
+        && !Object.values(merged.buttons).includes('clip')) merged.buttons['right.thumbstick'] = 'clip';
     merged.boxColors = { ...DEFAULT_CONFIG.boxColors, ...(saved.boxColors || {}), ...(baked.boxColors || {}) };
     merged.menu = { ...DEFAULT_CONFIG.menu, ...(saved.menu || {}), ...(baked.menu || {}) };
     merged.eyeOffset = { ...DEFAULT_CONFIG.eyeOffset, ...(saved.eyeOffset || {}), ...(baked.eyeOffset || {}) };
@@ -2798,10 +2802,16 @@
       // Press and release the game's own "save clip" binding (looked up by FisterQoL from the game's controls).
       if (down) {
         const bridge = root.__fisterQolVrBridge;
-        const bound = bridge && typeof bridge.clipInput === 'function' ? bridge.clipInput() : null;
+        if (!bridge) { log('Clip button: FisterQoL is not loaded.'); toast('Saving clips needs FisterQoL: use the "Fister VR + FisterQoL" bookmark.'); pulse(hand, 0.3, 40); return; }
+        const bound = typeof bridge.clipInput === 'function' ? bridge.clipInput() : null;
         state.clipHeld = bound;
-        if (!bound) { warnOnce('clip-key', 'Clip button: no clip key found in the game controls.'); setStatus('No clip key bound in the game controls'); return; }
-        log('Clip button: sending ' + JSON.stringify(bound) + '.');
+        if (!bound) { log('Clip button: no Save clip key found in the game controls.'); toast('No Save clip key found in the game\'s controls. Bind one in Settings > Controls.'); pulse(hand, 0.3, 40); return; }
+        let recording = null;
+        try { const v = localStorage.getItem('fister-clip-recording'); recording = v === null ? null : v !== 'false'; } catch {}
+        const name = bound.key ? bound.key.replace(/^Key|^Digit/, '') : 'mouse ' + (bound.mouse + 1);
+        log('Clip button: sending ' + JSON.stringify(bound) + (recording === false ? ' (clip recording is off in the game settings)' : '') + '.');
+        if (recording === false) toast('Clip recording is off. Turn it on in the game\'s Settings > Clips, then clips can be saved.');
+        else toast('Saving clip (' + name + ')');
         pulse(hand, 0.7, 90);
         runAction(bound, true, frame, null);
       } else if (state.clipHeld) {
@@ -2836,6 +2846,26 @@
         else if (src.gamepad.vibrationActuator && src.gamepad.vibrationActuator.playEffect) src.gamepad.vibrationActuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: intensity });
       }
     } catch {}
+  }
+
+  // Short message at the top of the screen. It's part of the page, so it also shows on the floating HUD in the headset.
+  function toast(text) {
+    whenBody(() => {
+      let el = document.getElementById('fister-vr-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'fister-vr-toast';
+        el.style.cssText = 'position:fixed;left:50%;top:14%;transform:translateX(-50%);z-index:2147483645;max-width:min(560px,80vw);padding:8px 14px;'
+          + 'background:#c0c0c0;color:#000;font:bold 15px Tahoma,Arial,sans-serif;text-align:center;pointer-events:none;'
+          + 'box-shadow:inset -1px -1px #0a0a0a,inset 1px 1px #fff,inset -2px -2px #808080,inset 2px 2px #dfdfdf;';
+        document.body.appendChild(el);
+      }
+      el.textContent = text;
+      el.style.display = 'block';
+      clearTimeout(state.toastTimer);
+      state.toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3500);
+      if (state.menu) state.menu.dirty = true;
+    });
   }
 
   // Controllers that connected before our rig existed never sent us a 'connected' event. three.js assigns controller

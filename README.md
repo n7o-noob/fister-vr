@@ -63,8 +63,9 @@ Tap the bookmark again after each page reload.
 On the setup page, set **What the bookmark loads** to **Fister VR + FisterQoL**. The bookmark then loads
 FisterQoL (reformatted from its Tampermonkey version to run from a bookmark), with the VR mod inside it.
 
-- **Tap the bookmark as soon as fister.fun opens, before tapping anything on the page.** FisterQoL has to hook
-  in before the game starts loading; if it's too late, the bookmark says so and you reload and tap again.
+- **Tap the bookmark any time on fister.fun**, best from the main menu. FisterQoL has to start before the game
+  does, so the bookmark restarts the game inside the same tab (a fresh copy of the home page in a full-window frame,
+  with FisterQoL loaded first) and stops the copy that was already running. If you're in a match you'll leave it.
 - You get FisterQoL's **QoL** settings tab. Its **VR** section has every VR setting plus Enter VR, Recenter,
   VR info and Copy log.
 - **Clips in VR:** in the headset the game's canvas stops updating, so clips would be a frozen frame. While the

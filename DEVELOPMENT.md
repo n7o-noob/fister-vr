@@ -106,7 +106,7 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
-## v0.9.0: FisterQoL option and VR clips
+## v0.9.0 – v0.9.1: FisterQoL option and VR clips
 
 - **Setup page option "What the bookmark loads":** Fister VR only, or Fister VR + FisterQoL.
   - `qol/FisterQoL.user.template.js` is the FisterQoL Tampermonkey userscript with `const VR_SOURCE=__FISTER_VR_SOURCE__;`
@@ -116,12 +116,22 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
     no Steam staging path, bookmark wording in the "started too late" message. The build fails if any
     Tampermonkey-only code is left or a swap anchor stops matching.
   - The result is gzipped and base64'd (~950 KB -> ~335 KB bookmarklet). `site/qol-loader.js` builds the loader:
-    checks fister.fun home page / already running / game already loading (`__fisterRuntimeBootPromise`,
-    `__fisterRuntimeLoaded`, `#runtime-ui-root[data-loaded=1]`), turns on QoL VR mode, writes the page's VR settings
-    to `fister-vr-config` (every tap, or only when none are saved), then unpacks with `DecompressionStream` and runs
-    it as a `<script>`.
-  - Timing: QoL hooks the game's lazy `__fisterRuntimeBootPromise`, so the bookmark must run before the game starts
-    loading its runtime. Unverified on the real site whether that happens on first tap/click or by itself.
+    turns on QoL VR mode, writes the page's VR settings to `fister-vr-config` (every tap, or only when none are saved),
+    unpacks with `DecompressionStream`.
+  - **Restart in a frame (v0.9.1).** QoL must run before the game's bootstrap reads `__fisterRuntimeBootPromise`,
+    and in the headset nobody can tap a bookmark that fast (the user's report on 0.9.0). So the loader always:
+    1. fetches `/` (the home page HTML);
+    2. freezes the running page: `window.stop()`, clears timers, no-op rAF/timers, pauses media, loses its WebGL
+       contexts, closes AudioContexts on next use, closes WebSockets on their next send/receive, ends stream readers
+       (WebTransport), and stubs `WebSocket` so it can't reconnect;
+    3. replaces `<body>` with a full-window same-origin `<iframe id="fister-qol-frame">` (allow: fullscreen,
+       xr-spatial-tracking, autoplay, microphone, ...), and `document.open/write`s the fetched HTML into it with
+       `<script>parent.__fisterQolBoot(window)</script>` first in `<head>`, which appends the QoL code as a script in
+       the frame. The frame's URL is the top page's (`/`), so QoL's path check and relative module URLs work, and the
+       game boots fresh in its own realm with QoL hooked from the start;
+    4. if the frame later loads without QoL (the game reloaded itself), it is replaced by a freshly booted frame.
+  - Known limits: the game runs framed (`window.top !== window`); a cross-origin navigation inside the frame
+    (e.g. an OAuth login that isn't a popup) can't be followed. Not verified on the real site yet.
 - **Clip view** (`renderClipView`, `clipFrame`): in VR the canvas doesn't update. While FisterQoL's clip hook asks for
   frames (`fisterVR.clipFrame()` from `fisterClipOverlays.recordingCanvas`, i.e. while the game records), a
   first-person view from `state.view`'s world pose (lerp/slerp smoothing) is rendered with XR off into the bottom-left

@@ -20,7 +20,8 @@ standalone **Meta Quest 2**. It runs in the Quest Browser, with no PC, SteamVR o
   bar, on a panel that floats in front of you. Point the right hand and pull the trigger to click; sliders,
   checkboxes and dropdowns work, and the stick scrolls.
 - **Ragdolls** switch to the game's third-person camera until you get up.
-- **Works through menus, round breaks and killcam.**
+- **Works from the main menu:** enter VR before the game shows any 3D, and the view switches to the game when it
+  starts rendering. It keeps working through menus, round breaks and killcam.
 - **Fixes for VR-specific problems:** outline glow that draws as black boxes, input that stops after focus
   changes, late screen clears that flash black, and one-frame position glitches.
 - **Debug console:** hold both grips for a second in VR, or press VR INFO outside it.
@@ -31,7 +32,7 @@ standalone **Meta Quest 2**. It runs in the Quest Browser, with no PC, SteamVR o
    **Copy bookmarklet**.
 2. Bookmark any page, edit that bookmark, rename it **Fister VR**, and paste the copied text (it starts with
    `javascript:`) over its URL.
-3. Open fister.fun and get into a match, so the 3D view is moving.
+3. Open fister.fun. The main menu is fine; you don't need to be in a match.
 4. Open Bookmarks, tap **Fister VR**, then press **Enter VR** (bottom left).
 
 Tap the bookmark again after each page reload.

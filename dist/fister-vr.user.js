@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.7.2
+// @version      0.7.5
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -273,7 +273,7 @@
   // ---------------------------------------------------------------------------------------------------------
   let lateObject3DProto = null, lateOriginalOnBeforeRender = null;
   const lateGetter = function () {
-    try { if (this && this.isCamera === true && state.renderers.size === 0) armLateRendererProbe(this); } catch {}
+    try { if (this && this.isCamera === true && !hasMainRenderer()) armLateRendererProbe(this); } catch {}
     return undefined;
   };
   Object.defineProperty(Object.prototype, 'isArrayCamera', { configurable: true, enumerable: false, get: lateGetter, set(value) {
@@ -283,6 +283,14 @@
     const current = Object.getOwnPropertyDescriptor(Object.prototype, 'isArrayCamera');
     if (current && current.get === lateGetter) delete Object.prototype.isArrayCamera;
   }
+
+  // The game's main renderer draws to a big on-screen canvas; small ones (avatar previews) don't count.
+  function isMainRenderer(renderer) {
+    const c = renderer && renderer.domElement;
+    if (!c || !c.isConnected) return false;
+    return (c.clientWidth * c.clientHeight) > 0.3 * innerWidth * innerHeight;
+  }
+  function hasMainRenderer() { for (const r of state.renderers) if (isMainRenderer(r)) return true; return false; }
 
   function armLateRendererProbe(camera) {
     if (lateObject3DProto) return;
@@ -294,7 +302,7 @@
     proto.onBeforeRender = function fisterVrProbe(renderer, scene, cam) {
       if (renderer && renderer.isWebGLRenderer === true && scene && scene.isScene === true) {
         proto.onBeforeRender = lateOriginalOnBeforeRender; // restore at once
-        removeLateCameraProbe();
+        lateObject3DProto = null; // may re-arm if this wasn't the main renderer
         log('Late attach: renderer found from a running frame.');
         captureRenderer(renderer);
         noteRender(renderer, scene, cam);
@@ -355,7 +363,7 @@
   function captureRenderer(renderer) {
     if (state.renderers.has(renderer) || typeof renderer.render !== 'function' || !renderer.xr) return;
     state.renderers.add(renderer);
-    removeLateCameraProbe();
+    if (isMainRenderer(renderer)) removeLateCameraProbe();
 
     // Step 1 of the brief: renderer.xr.enabled = true directly after the WebGLRenderer is created.
     renderer.xr.enabled = true;
@@ -398,8 +406,9 @@
     renderer.xr.addEventListener('sessionstart', () => onSessionStart(renderer));
     renderer.xr.addEventListener('sessionend', () => onSessionEnd(renderer));
 
-    log('WebGLRenderer captured; renderer.xr.enabled = true.');
+    log('WebGLRenderer captured' + (isMainRenderer(renderer) ? ' (main game view)' : ' (small, not the game view)') + '; renderer.xr.enabled = true.');
     whenBody(ensureVrButton);
+    if (state.standalone && isMainRenderer(renderer)) handOffStandalone(renderer);
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -419,6 +428,11 @@
   };
 
   function xrFrame(renderer, time, frame) {
+    if (state.inXrFrame) return; // never re-enter (a queued callback must not run another XR frame inside this one)
+    state.inXrFrame = true;
+    try { xrFrameBody(renderer, time, frame); } finally { state.inXrFrame = false; }
+  }
+  function xrFrameBody(renderer, time, frame) {
     state.xrTarget = renderer.getRenderTarget();
     state.mainRendered = false;
     if (time - state.focusTimer > 2000) {
@@ -1313,6 +1327,40 @@
     try { const u = new URL(url, location.href); return u.origin === location.origin || u.protocol === 'data:' || u.protocol === 'blob:'; }
     catch { return false; }
   }
+  // Image cache for the menu painter. Same-origin and data: images draw directly; other sites' images are re-fetched
+  // with CORS (works when the host allows it) so they don't poison the texture. Inline SVG icons are serialised to
+  // data: images. Anything still loading redraws the panel when it arrives.
+  const imageCache = new Map();
+  function cachedImage(url, crossOrigin) {
+    let entry = imageCache.get(url);
+    if (!entry) {
+      if (imageCache.size > 400) imageCache.delete(imageCache.keys().next().value);
+      const img = new Image();
+      entry = { img, ok: false, failed: false };
+      if (crossOrigin) img.crossOrigin = 'anonymous';
+      img.onload = () => { entry.ok = true; if (state.menu) state.menu.dirty = true; if (state.standalone && state.standalone.menu) state.standalone.menu.dirty = true; };
+      img.onerror = () => { entry.failed = true; };
+      img.src = url;
+      imageCache.set(url, entry);
+    }
+    return entry.ok ? entry.img : null;
+  }
+  function imageFor(url) {
+    if (!url) return null;
+    return sameOrigin(url) ? cachedImage(url, false) : cachedImage(url, true);
+  }
+  function svgImage(el, cs) {
+    if (el.querySelector('foreignObject')) return null;
+    const clone = el.cloneNode(true);
+    const r = el.getBoundingClientRect();
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', String(Math.max(1, Math.round(r.width))));
+    clone.setAttribute('height', String(Math.max(1, Math.round(r.height))));
+    clone.setAttribute('style', 'color:' + cs.color + ';fill:' + cs.fill + ';stroke:' + cs.stroke);
+    const text = new XMLSerializer().serializeToString(clone);
+    if (text.length > 60000) return null;
+    return cachedImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text), false);
+  }
   const transparentColor = (c) => !c || c === 'transparent' || /rgba\([^)]*,\s*0(\.0+)?\)$/.test(c);
 
   function paintDom(menu) {
@@ -1342,13 +1390,42 @@
         if (m) bg = m[0];
       }
       const bw = parseFloat(cs.borderTopWidth) || 0;
-      const hasBorder = bw > 0 && cs.borderTopStyle !== 'none' && !transparentColor(cs.borderTopColor);
+      const sides = ['Top', 'Right', 'Bottom', 'Left'].map((k) => ({ w: parseFloat(cs['border' + k + 'Width']) || 0, c: cs['border' + k + 'Color'], s: cs['border' + k + 'Style'] }));
+      const uniform = sides.every((b) => b.w === sides[0].w && b.c === sides[0].c && b.s === sides[0].s);
+      const anySide = sides.some((b) => b.w > 0 && b.s !== 'none' && !transparentColor(b.c));
+      const hasBorder = uniform ? (bw > 0 && cs.borderTopStyle !== 'none' && !transparentColor(cs.borderTopColor)) : false;
+      const bgUrl = cs.backgroundImage && cs.backgroundImage !== 'none' ? (cs.backgroundImage.match(/url\(["']?([^"')]+)["']?\)/) || [])[1] : null;
       const shadow = cs.boxShadow && cs.boxShadow !== 'none' && /inset/.test(cs.boxShadow);
-      if (transparentColor(bg) && !hasBorder && !shadow) return;
+      if (transparentColor(bg) && !hasBorder && !shadow && !anySide && !bgUrl) return;
       ctx.globalAlpha = alpha;
       boxPath(r, cs);
       if (!transparentColor(bg)) { ctx.fillStyle = bg; ctx.fill(); }
+      if (bgUrl && !menu.noImages) {
+        const img = imageFor(bgUrl);
+        if (img && img.naturalWidth) {
+          // background-size: contain / cover / explicit sizes are approximated; repeat is drawn once.
+          const x = r.left * sx, y = r.top * sy, w = r.width * sx, h = r.height * sy;
+          const size = cs.backgroundSize || 'auto';
+          let dw = w, dh = h;
+          const ir = img.naturalWidth / img.naturalHeight;
+          if (size === 'contain') { if (w / h > ir) { dh = h; dw = h * ir; } else { dw = w; dh = w / ir; } }
+          else if (size === 'cover') { if (w / h > ir) { dw = w; dh = w / ir; } else { dh = h; dw = h * ir; } }
+          else if (size === 'auto' || size === 'auto auto') { dw = Math.min(w, img.naturalWidth * sx); dh = dw / ir; }
+          const pos = (cs.backgroundPosition || '50% 50%').split(' ');
+          const frac = (v) => v.endsWith('%') ? parseFloat(v) / 100 : (v === 'center' ? 0.5 : v === 'right' || v === 'bottom' ? 1 : 0);
+          ctx.save(); boxPath(r, cs); ctx.clip();
+          drawSource(img, img, x + (w - dw) * frac(pos[0] || '50%'), y + (h - dh) * frac(pos[1] || pos[0] || '50%'), dw, dh);
+          ctx.restore();
+        }
+      }
       if (hasBorder) { ctx.lineWidth = Math.max(1, bw * sx); ctx.strokeStyle = cs.borderTopColor; ctx.stroke(); }
+      else if (anySide) {
+        const x = r.left * sx, y = r.top * sy, w = r.width * sx, h = r.height * sy;
+        const [t, rt, b, l] = sides;
+        const draw = (side, fx, fy, fw, fh) => { if (side.w > 0 && side.s !== 'none' && !transparentColor(side.c)) { ctx.fillStyle = side.c; ctx.fillRect(fx, fy, fw, fh); } };
+        draw(t, x, y, w, t.w * sy); draw(b, x, y + h - b.w * sy, w, b.w * sy);
+        draw(l, x, y, l.w * sx, h); draw(rt, x + w - rt.w * sx, y, rt.w * sx, h);
+      }
       if (shadow) {
         // Win95-style bevels are drawn with inset box-shadows: light top/left, dark bottom/right.
         const colors = cs.boxShadow.match(/rgba?\([^)]*\)|#[0-9a-f]{3,8}/gi) || [];
@@ -1407,7 +1484,14 @@
       if (visible && onScreen && r.width > 0 && r.height > 0 && el !== document.body && el !== document.documentElement && !isGameCanvas(el)) {
         paintBox(r, cs, a);
         ctx.globalAlpha = a;
-        if (tag === 'IMG' && !menu.noImages && el.complete && el.naturalWidth && sameOrigin(el.currentSrc || el.src)) {
+        if (tag === 'IMG' && !menu.noImages && el.complete && el.naturalWidth) {
+          const src = el.currentSrc || el.src;
+          const img = sameOrigin(src) ? el : imageFor(src);
+          if (img) drawSource(img, img, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
+        } else if ((tag === 'svg' || tag === 'SVG') && !menu.noImages && r.width * r.height < 0.25 * innerWidth * innerHeight) {
+          const img = svgImage(el, cs);
+          if (img) drawSource(img, img, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
+        } else if (tag === 'VIDEO' && !menu.noImages && el.readyState >= 2 && sameOrigin(el.currentSrc || el.src)) {
           drawSource(el, el, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
         } else if (tag === 'CANVAS' && !menu.noImages && !big(r)) {
           drawSource(el, el, r.left * sx, r.top * sy, r.width * sx, r.height * sy);
@@ -1644,6 +1728,244 @@
     }
   }
 
+  // --- menu-only VR: enter VR before the game draws anything 3D ---------------------------------------------------
+  // On the landing page / main menu the game may not have drawn a 3D frame yet, so there is no three.js renderer to
+  // hand the headset to. In that case we run the session ourselves with a tiny WebGL renderer: the menu panel, the
+  // laser and a floor grid. As soon as the game renders (you press Play, or the menu's skybox starts), the session is
+  // handed to the game's renderer without leaving VR.
+  const mat4 = {
+    mul(a, b) {
+      const o = new Float32Array(16);
+      for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+        o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+      }
+      return o;
+    },
+    // translate(x,y,z) * rotateY(yaw) * scale(sx,sy,sz)
+    trs(x, y, z, yaw, sx, sy, sz) {
+      const c = Math.cos(yaw), s = Math.sin(yaw);
+      return new Float32Array([c * sx, 0, -s * sx, 0, 0, sy, 0, 0, s * sz, 0, c * sz, 0, x, y, z, 1]);
+    },
+  };
+
+  function standaloneGl(session) {
+    const canvas = document.createElement('canvas');
+    const attrs = { xrCompatible: true, alpha: false, antialias: true, depth: true };
+    const gl = canvas.getContext('webgl2', attrs) || canvas.getContext('webgl', attrs);
+    if (!gl) throw new Error('WebGL unavailable');
+    const compile = (type, src) => {
+      const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+      return sh;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, 'attribute vec3 p;attribute vec2 uv;uniform mat4 mvp;varying vec2 v;void main(){v=uv;gl_Position=mvp*vec4(p,1.0);}'));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, 'precision mediump float;uniform sampler2D t;uniform vec4 c;uniform float tex;varying vec2 v;void main(){vec4 col=tex>0.5?texture2D(t,vec2(v.x,1.0-v.y))*c:c;if(col.a<0.01)discard;gl_FragColor=col;}'));
+    gl.linkProgram(prog);
+    const loc = { p: gl.getAttribLocation(prog, 'p'), uv: gl.getAttribLocation(prog, 'uv'), mvp: gl.getUniformLocation(prog, 'mvp'),
+      t: gl.getUniformLocation(prog, 't'), c: gl.getUniformLocation(prog, 'c'), tex: gl.getUniformLocation(prog, 'tex') };
+    const quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0, 0, 0, 0.5, -0.5, 0, 1, 0, 0.5, 0.5, 0, 1, 1, -0.5, -0.5, 0, 0, 0, 0.5, 0.5, 0, 1, 1, -0.5, 0.5, 0, 0, 1]), gl.STATIC_DRAW);
+    const lines = gl.createBuffer();
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+    return { canvas, gl, prog, loc, quad, lines, texture };
+  }
+
+  async function startStandalone(session) {
+    const g = standaloneGl(session);
+    if (g.gl.makeXRCompatible) await g.gl.makeXRCompatible();
+    const scale = Math.min(1.5, Math.max(0.4, Number(config.framebufferScale) || 1));
+    const layer = new XRWebGLLayer(session, g.gl, { framebufferScaleFactor: scale });
+    await session.updateRenderState({ baseLayer: layer });
+    const space = await session.requestReferenceSpace('local');
+    const width = Math.max(512, Math.min(2048, Number(config.menu.resolution) || 1280));
+    const aspect = Math.min(1, Math.max(0.3, (innerHeight || 720) / (innerWidth || 1280)));
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = Math.round(width * aspect);
+    const menu = { canvas, ctx: canvas.getContext('2d'), texture: { needsUpdate: false }, aspect, dirty: true, lastDraw: 0, draws: 0, drawMs: 0, nodes: 0, noImages: false, yaw: null };
+    const sa = { session, space, layer, g, menu, handedOff: false, frames: 0, floorY: null, hand: null };
+    state.standalone = sa;
+    state.presenting = true;
+    state.redirectRaf = true;
+    spoofFocus(true);
+    try { state.menuObserver2 = new MutationObserver(() => { menu.dirty = true; }); state.menuObserver2.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {}
+    session.addEventListener('end', () => endStandalone(sa));
+    session.requestAnimationFrame((t, f) => standaloneFrame(sa, t, f));
+    log('Menu-only VR started (no game 3D yet). It switches to the game view as soon as the game renders.');
+    setStatus('In VR (menus) · switches to the game when it starts rendering');
+  }
+
+  function endStandalone(sa) {
+    if (state.standalone !== sa) return;
+    state.standalone = null;
+    if (sa.handedOff) return;
+    releaseAllInput();
+    state.presenting = false;
+    state.redirectRaf = false;
+    state.uiHit = null;
+    spoofFocus(false);
+    if (state.menuObserver2) { try { state.menuObserver2.disconnect(); } catch {} state.menuObserver2 = null; }
+    const queue = state.rafQueue;
+    state.rafQueue = new Map();
+    for (const callback of queue.values()) nativeRaf(callback);
+    setStatus('');
+    log('Menu-only VR ended.');
+  }
+
+  // Called from captureRenderer: the game started rendering while we run the session ourselves.
+  function handOffStandalone(renderer) {
+    const sa = state.standalone;
+    if (!sa || sa.handedOff) return;
+    sa.handedOff = true;
+    if (state.menuObserver2) { try { state.menuObserver2.disconnect(); } catch {} state.menuObserver2 = null; }
+    state.uiHit = null;
+    state.renderer = renderer;
+    try { renderer.xr.setFramebufferScaleFactor(Math.min(1.5, Math.max(0.4, Number(config.framebufferScale) || 1))); } catch {}
+    renderer.xr.setSession(sa.session).then(() => {
+      log('Handed the headset to the game renderer.');
+    }).catch((error) => {
+      record('error', ['Hand-off to the game renderer failed:', error]);
+      sa.handedOff = false;
+      state.standalone = sa;
+      sa.session.requestAnimationFrame((t, f) => standaloneFrame(sa, t, f));
+    });
+  }
+
+  function standaloneFrame(sa, time, frame) {
+    if (sa.handedOff || state.standalone !== sa) return;
+    sa.session.requestAnimationFrame((t, f) => standaloneFrame(sa, t, f));
+    sa.frames++;
+    // Let the page (and the game's loop, if it runs) do its frame work inside the XR frame.
+    const queue = state.rafQueue;
+    state.rafQueue = new Map();
+    for (const callback of queue.values()) { try { callback(time); } catch (error) { record('game-error', ['Game frame error:', error]); } }
+    if (sa.handedOff) return; // the game rendered during its frame and took over
+    safe('controller input', () => pollInput(frame));
+    const pose = frame.getViewerPose(sa.space);
+    if (!pose) return;
+    safe('menu-only view', () => drawStandalone(sa, frame, pose));
+  }
+
+  function drawStandalone(sa, frame, pose) {
+    const { gl, prog, loc, quad, lines, texture } = sa.g;
+    const menu = sa.menu;
+    const now = performance.now();
+    const minGap = Math.max(1000 / Math.max(1, Number(config.menu.maxFps) || 12), (menu.drawMs || 0) * 12);
+    if ((menu.dirty && now - menu.lastDraw > minGap) || now - menu.lastDraw > 1000) {
+      menu.dirty = false; menu.lastDraw = now;
+      const t0 = performance.now();
+      paintDom(menu);
+      const dt = performance.now() - t0;
+      menu.drawMs = menu.drawMs ? menu.drawMs * 0.8 + dt * 0.2 : dt;
+      menu.draws++;
+    }
+    // Panel: in front of your head, lazily following your facing.
+    const hp = pose.transform.position, ho = pose.transform.orientation;
+    const headYaw = Math.atan2(2 * (ho.w * ho.y + ho.x * ho.z), 1 - 2 * (ho.y * ho.y + ho.x * ho.x));
+    if (menu.yaw === null) menu.yaw = headYaw;
+    const diff = wrapAngle(headYaw - menu.yaw);
+    if (Math.abs(diff) > (Number(config.menu.followDeg) || 35) * Math.PI / 180) menu.catching = true;
+    if (menu.catching) { menu.yaw += diff * 0.12; if (Math.abs(diff) < 0.05) menu.catching = false; }
+    if (sa.floorY === null) sa.floorY = hp.y - 1.6;
+    const d = Number(config.menu.distance) || 1.4, w = Number(config.menu.width) || 1.6, h = w * menu.aspect;
+    const cx = hp.x - Math.sin(menu.yaw) * d, cy = hp.y - (Number(config.menu.drop) || 0.15), cz = hp.z - Math.cos(menu.yaw) * d;
+
+    // Laser from the right controller.
+    let hit = null, ray = null;
+    for (const source of frame.session.inputSources) {
+      if (source.handedness !== config.aimHand || !source.targetRaySpace) continue;
+      const rp = frame.getPose(source.targetRaySpace, sa.space);
+      if (!rp) continue;
+      const m = rp.transform.matrix;
+      const o = [m[12], m[13], m[14]], dir = [-m[8], -m[9], -m[10]];
+      ray = { o, dir, len: 3 };
+      const cs = Math.cos(-menu.yaw), sn = Math.sin(-menu.yaw);
+      const ox = o[0] - cx, oy = o[1] - cy, oz = o[2] - cz;
+      const lo = [ox * cs + oz * sn, oy, -ox * sn + oz * cs];
+      const ld = [dir[0] * cs + dir[2] * sn, dir[1], -dir[0] * sn + dir[2] * cs];
+      if (Math.abs(ld[2]) > 1e-6) {
+        const t = -lo[2] / ld[2];
+        const x = lo[0] + ld[0] * t, y = lo[1] + ld[1] * t;
+        if (t > 0 && Math.abs(x) <= w / 2 && Math.abs(y) <= h / 2) {
+          const clientX = (x / w + 0.5) * innerWidth, clientY = (0.5 - y / h) * innerHeight;
+          const el = document.elementFromPoint(clientX, clientY);
+          if (hitInteractive(el)) { hit = { element: el, x: clientX, y: clientY }; ray.len = t; }
+        }
+      }
+    }
+    state.uiHit = hit;
+    if (state.uiPress && hit) uiDrag(hit);
+
+    // Draw.
+    const layer = sa.layer;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    gl.clearColor(0.07, 0.09, 0.13, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(prog);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.DEPTH_TEST);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    if (menu.texture.needsUpdate) {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, menu.canvas);
+      menu.texture.needsUpdate = false;
+    }
+    gl.uniform1i(loc.t, 0);
+    // Floor grid + laser as lines.
+    const grid = [];
+    const fy = sa.floorY, gx = Math.round(hp.x), gz = Math.round(hp.z);
+    for (let i = -8; i <= 8; i++) { grid.push(gx - 8, fy, gz + i, gx + 8, fy, gz + i, gx + i, fy, gz - 8, gx + i, fy, gz + 8); }
+    const laser = ray ? [ray.o[0], ray.o[1], ray.o[2], ray.o[0] + ray.dir[0] * ray.len, ray.o[1] + ray.dir[1] * ray.len, ray.o[2] + ray.dir[2] * ray.len] : [];
+    const panelModel = mat4.trs(cx, cy, cz, menu.yaw, w, h, 1);
+    for (const view of pose.views) {
+      const vp = layer.getViewport(view);
+      gl.viewport(vp.x, vp.y, vp.width, vp.height);
+      const vpm = mat4.mul(view.projectionMatrix, view.transform.inverse.matrix);
+      // lines
+      gl.bindBuffer(gl.ARRAY_BUFFER, lines);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(grid.concat(laser)), gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(loc.p);
+      gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 12, 0);
+      gl.disableVertexAttribArray(loc.uv);
+      gl.vertexAttrib2f(loc.uv, 0, 0);
+      gl.uniformMatrix4fv(loc.mvp, false, vpm);
+      gl.uniform1f(loc.tex, 0);
+      gl.uniform4f(loc.c, 0.3, 0.45, 0.55, 0.6);
+      gl.drawArrays(gl.LINES, 0, grid.length / 3);
+      if (laser.length) {
+        gl.uniform4f(loc.c, 1, 1, 1, hit ? 0.9 : 0.35);
+        gl.drawArrays(gl.LINES, grid.length / 3, 2);
+      }
+      // panel
+      gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+      gl.enableVertexAttribArray(loc.p);
+      gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(loc.uv);
+      gl.vertexAttribPointer(loc.uv, 2, gl.FLOAT, false, 20, 12);
+      gl.uniformMatrix4fv(loc.mvp, false, mat4.mul(vpm, panelModel));
+      gl.uniform1f(loc.tex, 1);
+      gl.uniform4f(loc.c, 1, 1, 1, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      if (hit && ray) {
+        const p = [ray.o[0] + ray.dir[0] * ray.len, ray.o[1] + ray.dir[1] * ray.len, ray.o[2] + ray.dir[2] * ray.len];
+        gl.uniformMatrix4fv(loc.mvp, false, mat4.mul(vpm, mat4.trs(p[0], p[1], p[2], menu.yaw, 0.015, 0.015, 1)));
+        gl.uniform1f(loc.tex, 0);
+        gl.disable(gl.DEPTH_TEST);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.enable(gl.DEPTH_TEST);
+      }
+    }
+  }
+
   // --- keep the game listening ------------------------------------------------------------------------------
   // In an immersive session the 2D page can lose focus; the game then drops or ignores input until you switch
   // tabs. While in VR we report the page as focused/visible and replay focus + held keys whenever it slips.
@@ -1750,7 +2072,24 @@
     else if (typeof action.key === 'string') sendKey(action.key, down);
   }
 
+  // Controllers that connected before our rig existed never sent us a 'connected' event. three.js assigns controller
+  // slots in the order input sources appear, so adopt them from the session's list.
+  function adoptControllers(session) {
+    if (!session || !state.controllers.length) return;
+    const sources = [...session.inputSources].filter((src) => src.targetRayMode === 'tracked-pointer' || src.gamepad);
+    for (const entry of state.controllers) {
+      if (entry.source) continue;
+      const src = sources[entry.index];
+      if (!src) continue;
+      entry.source = src;
+      entry.handedness = src.handedness || 'none';
+      if (entry.box && entry.box.material.color) entry.box.material.color.setHex(config.boxColors[entry.handedness] ?? config.boxColors.none);
+      log('Controller ' + entry.index + ' adopted (' + entry.handedness + ').');
+    }
+  }
+
   function pollInput(frame) {
+    if (frame && frame.session) adoptControllers(frame.session);
     if (state.pendingRecenter) recenter(frame);
     const session = frame && frame.session;
     if (!session) return;
@@ -1841,9 +2180,10 @@
     spoofPointerLock(true);
     setTimeout(() => reassertFocus('session start'), 100);
 
-    const originalLoop = renderer.__fisterVrOriginalLoop;
     state.redirectRaf = true;
-    originalLoop.call(renderer, (time, frame) => xrFrame(renderer, time, frame));
+    // Hook the XR frame loop directly. renderer.setAnimationLoop would also restart three's window-rAF loop, which our
+    // rAF redirect feeds back into the XR frame: infinite recursion (stack overflow, black frames).
+    renderer.xr.setAnimationLoop((time, frame) => xrFrame(renderer, time, frame));
     setStatus('In VR' + (state.fp ? ' · first-person: ' + state.fp.label : ' · first-person: head anchor'));
     log('XR session started. Main camera:', state.gameCamera ? 'found' : 'pending first render');
   }
@@ -1862,6 +2202,7 @@
     restoreBody();
     restoreArmScale();
     if (state.rig && state.rig.parent) state.rig.parent.remove(state.rig);
+    renderer.xr.setAnimationLoop(null);
     renderer.__fisterVrOriginalLoop.call(renderer, state.gameAnimationLoop.get(renderer) || null);
     const queue = state.rafQueue;
     state.rafQueue = new Map();
@@ -1929,19 +2270,27 @@
     }
 
     let currentSession = null;
-    const sessionInit = { optionalFeatures: ['local-floor', 'bounded-floor', 'layers'] };
+    // No 'layers': the session may start in menu-only mode and later move to the game renderer, which is simplest with
+    // a plain XRWebGLLayer on both sides.
+    const sessionInit = { optionalFeatures: ['local-floor', 'bounded-floor'] };
 
     async function onSessionStarted(session) {
-      const { renderer } = pickMain();
-      if (!renderer) { session.end(); setStatus('Game renderer not ready yet; start a match first.'); return; }
-      state.renderer = renderer;
+      let { renderer } = pickMain();
+      if (renderer && !isMainRenderer(renderer)) renderer = [...state.renderers].find(isMainRenderer) || null;
       session.addEventListener('end', onSessionEnded);
-      try { renderer.xr.setFramebufferScaleFactor(Math.min(1.5, Math.max(0.4, Number(config.framebufferScale) || 1))); } catch {}
-      await renderer.xr.setSession(session);
       button.textContent = 'EXIT VR';
       currentSession = session;
+      if (!renderer) {
+        try { await startStandalone(session); }
+        catch (error) { record('error', ['Menu-only VR failed:', error]); session.end(); setStatus('VR failed: ' + (error && error.message || error)); }
+        return;
+      }
+      state.renderer = renderer;
+      try { renderer.xr.setFramebufferScaleFactor(Math.min(1.5, Math.max(0.4, Number(config.framebufferScale) || 1))); } catch {}
+      await renderer.xr.setSession(session);
     }
     function onSessionEnded() {
+      if (!currentSession) return;
       currentSession.removeEventListener('end', onSessionEnded);
       button.textContent = 'ENTER VR';
       currentSession = null;
@@ -1971,7 +2320,7 @@
     const errors = Object.entries(featureErrors).map(([k, v]) => k + '×' + v).join(', ') || 'none';
     const fps = state.frameMs ? Math.round(1000 / state.frameMs) : 0;
     return [
-      'VR: ' + (state.presenting ? 'in headset' : 'not in VR') + (fps ? ' · ' + fps + ' fps' : ''),
+      'VR: ' + (state.standalone && !state.standalone.handedOff ? 'in headset (menu-only, waiting for the game to render)' : state.presenting ? 'in headset' : 'not in VR') + (fps ? ' · ' + fps + ' fps' : ''),
       'View: ' + (state.gameplay ? (state.ragdoll ? 'ragdoll (third person)' : 'gameplay') : 'menu/theater') + ' (' + (state.gameplayReason || '-') + ')',
       'Eyes: ' + (state.gameplay ? (anchorObject().object === state.gameCamera ? 'game camera' : 'avatar head') : 'game camera')
         + ' · first-person flag: ' + (state.fp ? state.fp.label : 'none'),
@@ -2113,7 +2462,7 @@
     // Paste the output of this to get exact game hook names wired in.
     dump() {
       const gs = gameScene();
-      const out = { version: '0.7.2', userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
+      const out = { version: '0.7.5', userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
         gameSceneCaptured: !!state.gameScene, playersFound: !!(gs && gs.players), localPlayerFound: !!localPlayer(),
         renderers: state.renderers.size, camerasSeen: state.cameraStats.size,
         menuPanel: state.menu ? { draws: state.menu.draws, elements: state.menu.nodes, msPerDraw: +state.menu.drawMs.toFixed(1) } : (state.menuProblem || 'not built yet'),
@@ -2137,8 +2486,9 @@
       return out;
     },
     _internals: { captureRenderer, captureGameScene, pickMain, harvestClasses, ensureRig, updateRig, detectFirstPerson,
-      lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
+      lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, startStandalone, handOffStandalone, isMainRenderer, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
   });
 
-  log('v0.7.2 loaded; waiting for the game renderer.');
+  whenBody(ensureVrButton); // available right away, even before the game draws anything 3D
+  log('v0.7.5 loaded.');
 })();

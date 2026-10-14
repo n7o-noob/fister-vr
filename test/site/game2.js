@@ -66,6 +66,7 @@ class Game {
     this.players = new Map([['me', fresh]]);
   }
   frame = () => {
+    if (location.search.includes('norender') && !window.__started) { requestAnimationFrame(this.frame); return; } // main menu: no 3D yet
     if (location.search.includes('rebuild') && this.frames === this.rebuildAt) this.rebuildPlayers();
     const me = this.players.get('me');
     me.mesh.rotation.y = this.yaw;

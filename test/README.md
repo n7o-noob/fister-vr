@@ -12,3 +12,6 @@ They are for development only. To run them:
 2. `node tools/build.cjs` (the tests load `dist/fister-vr.bookmarklet.txt`).
 3. `node test/run12.cjs` (menus, aim, layers), `node test/run11.cjs` (black-flash
    fixes), `node test/run8.cjs` (walking / player rebuild), and so on.
+
+- `node test/run13.cjs`: menu-only VR before the game renders, then hand-off to the game (uses `xr-mock.js`, a fake WebXR headset).
+- `node test/run14.cjs`: normal VR session through three.js's real XR code, including hand aim.

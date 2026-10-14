@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.7.1
+// @version      0.7.2
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -52,7 +52,7 @@
     boxColors: { left: 0x35c4ff, right: 0xff5a5a, none: 0xffffff },
     // Arms (visual, client-side): 'aim' = each arm stays on its shoulder and points at its controller,
     // 'hand' = the arm's hand end sits on the controller, 'off' = game animation only.
-    armMode: 'aim',
+    armMode: 'hand',
     swapArms: true,
     // 'hand' arm mode: where the hands sit relative to the controllers, in metres, in your facing direction.
     // forward pushes them out in front of you, inward pulls them toward your centre line.
@@ -2113,7 +2113,7 @@
     // Paste the output of this to get exact game hook names wired in.
     dump() {
       const gs = gameScene();
-      const out = { version: '0.7.1', userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
+      const out = { version: '0.7.2', userAgent: navigator.userAgent, attach: state.lateScene && state.lateScene !== state.gameScene ? 'late' : 'early',
         gameSceneCaptured: !!state.gameScene, playersFound: !!(gs && gs.players), localPlayerFound: !!localPlayer(),
         renderers: state.renderers.size, camerasSeen: state.cameraStats.size,
         menuPanel: state.menu ? { draws: state.menu.draws, elements: state.menu.nodes, msPerDraw: +state.menu.drawMs.toFixed(1) } : (state.menuProblem || 'not built yet'),
@@ -2140,5 +2140,5 @@
       lockFirstPerson, unlockFirstPerson, boxGeometry, overrideArms, localPlayer, xrFrame, pollInput, gameScene, steerAim, armInfo, reassertFocus, spoofFocus, hideOutlines, isGameplayCamera, toggleInfoPanel, checkPlayersFresh, setupMenu, updateMenu, paintDom, uiPress, uiScroll, spoofPointerLock, logBuffer, liveSummary, hideBody, restoreBody, bodyMeshes, isRagdolled },
   });
 
-  log('v0.7.1 loaded; waiting for the game renderer.');
+  log('v0.7.2 loaded; waiting for the game renderer.');
 })();

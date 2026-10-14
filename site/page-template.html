@@ -95,7 +95,7 @@ ul.notes li { max-width: 68ch; }
     <div class="panel">
       <h1>Fister VR</h1>
       <p class="lede">Play fister.fun in your Quest 2 headset straight from the Quest Browser. No PC, SteamVR or extensions needed. You save a bookmark that adds an Enter VR button to the running game.</p>
-      <p class="note">Unofficial fan mod, v0.7.1. Not made by or affiliated with the Fister developers.</p>
+      <p class="note">Unofficial fan mod, v0.7.2. Not made by or affiliated with the Fister developers.</p>
     </div>
   </header>
 
@@ -169,8 +169,8 @@ ul.notes li { max-width: 68ch; }
         <div class="field">
           <label for="armMode">Arms</label>
           <select id="armMode">
-            <option value="aim" selected>From shoulder toward your hands</option>
-            <option value="hand">Hands on the controllers</option>
+            <option value="hand" selected>Hands on the controllers</option>
+            <option value="aim">From shoulder toward your hands</option>
             <option value="off">Game animation only</option>
           </select>
           <small>Visual only, for you. Other players see the game's own arms.</small>
@@ -212,14 +212,6 @@ ul.notes li { max-width: 68ch; }
             <option value="false">Shown</option>
           </select>
           <small>Head, arms and held items stay. Only you see this.</small>
-        </div>
-        <div class="field">
-          <label for="swapArms">Arm sides</label>
-          <select id="swapArms">
-            <option value="true" selected>Swapped (fixes Fister's backwards arm names)</option>
-            <option value="false">As the game names them</option>
-          </select>
-          <small>Use this if your left controller moves the right arm.</small>
         </div>
         <div class="field">
           <label for="menuMode">Game menus and HUD</label>
@@ -314,12 +306,12 @@ ul.notes li { max-width: 68ch; }
       </ul>
     </div>
   </section>
-  <footer class="taskbar"><span class="start"><span class="icon" aria-hidden="true"><b></b><b></b></span>Fister VR</span><span>Setup</span><span class="tray">v0.7.1</span></footer>
+  <footer class="taskbar"><span class="start"><span class="icon" aria-hidden="true"><b></b><b></b></span>Fister VR</span><span>Setup</span><span class="tray">v0.7.2</span></footer>
 </div>
 
 <script>
 const LAYER_SOURCE = __LAYER_SOURCE__;
-const ids = ['aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'swapArms', 'handOffset', 'hideBody'];
+const ids = ['aimMode', 'turnMode', 'snapTurnPixels', 'framebufferScale', 'worldScale', 'anchor', 'armMode', 'eyeUp', 'menuMode', 'menuDistance', 'armScale', 'boxScale', 'hideOutlines', 'handOffset', 'hideBody'];
 const codeEl = document.getElementById('code');
 const sizeEl = document.getElementById('size');
 const statusEl = document.getElementById('status');
@@ -341,7 +333,7 @@ function overrides() {
     boxScale: Number(v('boxScale')),
     menu: (() => { const [d, w] = v('menuDistance').split(',').map(Number); return { mode: v('menuMode'), distance: d, width: w }; })(),
     hideOutlines: v('hideOutlines'),
-    swapArms: v('swapArms') === 'true',
+    swapArms: true, // Fister names its arms backwards; always corrected
     hideBody: v('hideBody') === 'true',
     handOffset: (() => { const [f, i] = v('handOffset').split(',').map(Number); return { forward: f, inward: i, up: 0 }; })(),
   };

@@ -18,3 +18,4 @@ They are for development only. To run them:
 - `node test/run15.cjs`: main menu with no 3D objects (menu-only VR), clicks through WebXR select events, timers, then the panel and controller boxes appearing in the match.
 - `node test/run16.cjs`: enter VR from the main menu, game captures the mouse on `<body>`, a text box left focused: movement and hand aim must still reach the game after the hand-off; console Copy all.
 - `node test/run17.cjs` (and `ANIMALL=1 node test/run17.cjs`): power-up items follow the VR hand and scale with it, both when the game re-poses the arm every frame and when it doesn't; a first-person weapon on the game camera is moved into the scene at your hand.
+- `node test/run18.cjs`: hand aim converges on the spot the hand points at (floor hit or 10 m out), the aim line sits on the hand, and left-hand aim works.

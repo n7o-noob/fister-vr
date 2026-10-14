@@ -107,9 +107,10 @@ ul.notes li { max-width: 68ch; }
           <label for="aimMode">Aim with</label>
           <select id="aimMode">
             <option value="hand" selected>Right hand (like Vivecraft)</option>
+            <option value="left">Left hand</option>
             <option value="head">Mouse, as on desktop</option>
           </select>
-          <small>Right hand: your character faces and punches where your right controller points, and other players see it.</small>
+          <small>Your character faces and punches where that controller points, and other players see it. A thin line from the hand shows the aim; that hand's trigger also clicks menus.</small>
         </div>
         <div class="field">
           <label for="turnMode">Turning</label>
@@ -325,7 +326,8 @@ function overrides() {
     framebufferScale: Number(v('framebufferScale')),
     worldScale: Number(v('worldScale')),
     anchor: v('anchor'),
-    aimMode: v('aimMode'),
+    aimMode: v('aimMode') === 'head' ? 'head' : 'hand',
+    aimHand: v('aimMode') === 'left' ? 'left' : 'right',
     armMode: v('armMode'),
     armOverride: v('armMode') !== 'off',
     eyeOffset: { up: Number(v('eyeUp')), forward: 0 },

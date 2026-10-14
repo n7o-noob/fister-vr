@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fister VR (WebXR layer)
 // @namespace    fister-vr.local
-// @version      0.7.9
+// @version      0.8.0
 // @description  Experimental WebXR / SteamVR layer for Fister: Enter VR button, first-person lock, 1:1 headset tracking, 6DoF controllers.
 // @match        https://fister.fun/*
 // @match        https://www.fister.fun/*
@@ -29,7 +29,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.7.9';
+  const VERSION = '0.8.0';
   const root = globalThis;
   if (root.fisterVR) return;
 
@@ -68,7 +68,11 @@
     // Aim (Vivecraft-style): 'hand' steers the game's own aim (mouse look, which the server sees) toward where
     // the right controller points; your view comes only from the headset. 'head' = old behaviour (mouse aims).
     aimMode: 'hand',
-    aimHand: 'right',
+    aimHand: 'right',             // 'right' | 'left': the hand you aim (and click menus) with
+    // The game's aim starts at your body; we turn it so it passes through the spot your hand's ray points at:
+    // where the ray meets the ground, or this many metres out. A line from the hand shows that ray.
+    aimDistance: 10,
+    aimLaser: true,
     aimGain: 0.6,                 // fraction of the remaining angle corrected per frame
     aimDeadzoneDeg: 0.4,
     aimPitch: true,
@@ -377,6 +381,19 @@
       try {
         return renderThroughVr(this, originalRender, scene, camera);
       } catch (error) {
+        // A skinned mesh without skin data can't be measured for culling (seen with some power-up models once they
+        // come into view in the headset). Draw those without culling and try again.
+        const now = performance.now();
+        if (/applyBoneTransform|getX/.test(String(error && error.stack)) && scene && scene.traverse && now - (state.skinFixAt || 0) > 2000) {
+          state.skinFixAt = now;
+          let fixed = 0;
+          scene.traverse((n) => {
+            if (!n.isSkinnedMesh || !n.frustumCulled || n.boundingSphere) return;
+            try { n.computeBoundingSphere(); } catch { n.frustumCulled = false; fixed++; }
+          });
+          log('Turned off culling for ' + fixed + ' skinned mesh(es) without skin data.');
+          try { return renderThroughVr(this, originalRender, scene, camera); } catch {}
+        }
         warnOnce('render', 'render hook failed, falling back to the original renderer', error);
         record('error', ['Headset render failed:', error]);
         return originalRender.call(this, scene, camera);
@@ -696,6 +713,7 @@
     safe('view rig', () => updateRig(scene, camera, inBody));
     if (!state.menu && config.menu.mode !== 'off' && (state.menuRetry = (state.menuRetry || 0) + 1) % 30 === 1) safe('menu setup', setupMenu);
     safe('menu', updateMenu);   // before aim, so aim pauses the same frame the laser lands on a menu
+    safe('aim line', updateAimLaser);
     if (inBody) { safe('hand aim', steerAim); safe('arms', overrideArms); safe('held items', () => holdItems(localPlayer(), scene)); safe('hide body', () => hideBody(localPlayer())); }
     else { state.aim.lastYaw = null; safe('hide body', restoreBody); safe('held items', restoreItems); safe('arm size', restoreArmScale); }
     safe('outlines', () => hideOutlines(scene));
@@ -1107,8 +1125,8 @@
   // whatever clothing or cosmetics hang off them.
   const HIDDEN_LAYER_MASK = 1 << 31;
   function bodyMeshes(player) {
-    const keep = new Set([player.head, player.leftArm, player.rightArm, player.firstPersonWeaponRoot,
-      player.carMesh, player.tankMesh, player.scytheMesh, player.pistonMesh, player.laserbeamOrb].filter((o) => o && o.isObject3D));
+    const keep = new Set([player.head, player.leftArm, player.rightArm, player.carMesh, player.tankMesh,
+      ...ITEM_KEYS.map((k) => player[k])].filter((o) => o && o.isObject3D));
     const roots = [player.avatarVisualRoot, player.mesh, player.torso, player.leftLeg, player.rightLeg].filter((o) => o && o.isObject3D);
     const out = new Set();
     for (const root of roots) {
@@ -1310,7 +1328,11 @@
   // weapon, from its camera), so they floated where the animation had them, or weren't drawn at all. Each frame we
   // take where the game put the item relative to its animated arm and apply that to the arm you're moving instead:
   // same grip, and it scales with the arm. Items far from the game's hand (camera-held) are put straight in the hand.
-  const ITEM_KEYS = ['scytheMesh', 'pistonMesh', 'carMesh', 'tankMesh', 'laserbeamOrb', 'firstPersonWeaponRoot'];
+  // Held items as the game names them on a player (from a 0.7.9 debug report). carMesh/tankMesh are vehicles, not held.
+  const ITEM_KEYS = ['javelinMesh', 'bananarangMesh', 'singularityGrenadeMesh', 'stickyBombMesh', 'spellbookMesh', 'dodgeballMesh',
+    'pistonMesh', 'scytheMesh', 'physicsCannonMesh', 'bearTrapHeldMesh', 'sniperRifleMesh', 'harpoonVisual', 'laserbeamOrb',
+    'firstPersonWeaponRoot'];
+  const isUnder = (node, ancestor) => { for (let n = node && node.parent; n; n = n.parent) if (n === ancestor) return true; return false; };
   function armFor(player, hand) {
     const gameHand = config.swapArms ? (hand === 'left' ? 'right' : 'left') : hand;
     return gameHand === 'left' ? player.leftArm : player.rightArm;
@@ -1325,6 +1347,9 @@
     for (const key of ITEM_KEYS) {
       const item = player[key];
       if (!item || !item.isObject3D || item === player.leftArm || item === player.rightArm || seen.has(item)) continue;
+      // Already hanging off an arm (or off another item): it follows your hand by itself.
+      if (isUnder(item, player.leftArm) || isUnder(item, player.rightArm)) continue;
+      if (ITEM_KEYS.some((k) => player[k] && player[k] !== item && player[k].isObject3D && isUnder(item, player[k]))) continue;
       seen.add(item);
       let rec = items.get(item);
       if (!rec) { rec = { key, home: item.parent, reparented: false, arm: null }; items.set(item, rec); }
@@ -1431,14 +1456,55 @@
     aim[flip] = 0;
     aim[key] = aim[key] * 0.8 + sample * 0.2;
   }
+  // Where the aim hand's ray points: the ground in front of you, or aimDistance metres out. Also draws the aim line.
+  function aimTarget(entry) {
+    const t = state.aimTmp || (state.aimTmp = { o: new state.classes.Vector3(), d: new state.classes.Vector3(), p: new state.classes.Vector3(), q: new state.classes.Quaternion(), f: new state.classes.Vector3() });
+    entry.group.getWorldPosition(t.o);
+    entry.group.getWorldQuaternion(t.q);
+    t.d.set(0, 0, -1).applyQuaternion(t.q);
+    const scale = state.rig && state.rig.scale.x || 1;
+    let dist = (Number(config.aimDistance) || 10) * scale;
+    const player = localPlayer();
+    if (player && player.mesh && player.mesh.isObject3D && t.d.y < -0.02) {
+      player.mesh.getWorldPosition(t.f);
+      const hit = (t.f.y - t.o.y) / t.d.y;
+      if (hit > 0.3 * scale && hit < dist) dist = hit;
+    }
+    t.p.copy(t.o).addScaledVector(t.d, dist);
+    state.aimDist = dist / scale;
+    return t.p;
+  }
+  function updateAimLaser() {
+    const entry = aimEntry();
+    const show = !!(config.aimLaser && config.aimMode === 'hand' && entry && state.gameplay && !state.ragdoll && !state.uiHit && state.classes && state.classes.Mesh);
+    let laser = state.aimLaser;
+    if (!show) { if (laser) laser.visible = false; return; }
+    if (!laser) {
+      const g = boxGeometry(0.003, 0.003, 1);
+      g.translate(0, 0, -0.5);
+      laser = state.aimLaser = overlayMesh(g, 0xff5555, 1e6 - 1);
+      laser.material.opacity = 0.45;
+      laser.material.depthTest = true;
+      laser.name = 'fister-vr-aim-laser';
+    }
+    if (laser.parent !== entry.group) entry.group.add(laser);
+    if (state.aimDist === undefined) aimTarget(entry);
+    laser.scale.set(1, 1, Math.max(0.05, state.aimDist || 1));
+    laser.visible = true;
+  }
   function steerAim() {
     const aim = state.aim;
     if (config.aimMode !== 'hand') return;
     const entry = aimEntry();
     if (!entry || !state.gameplay || state.uiHit || state.uiPress) { aim.lastYaw = null; return; }
     const { tmp, gameCamera } = state;
-    entry.group.getWorldQuaternion(tmp.q3);
-    tmp.v3.set(0, 0, -1).applyQuaternion(tmp.q3);
+    const target = aimTarget(entry);
+    // Direction from your body (where the game's aim starts) to the spot your hand points at.
+    const player = localPlayer();
+    const from = player && player.head && player.head.isObject3D ? player.head.getWorldPosition(tmp.v4) : gameCamera.getWorldPosition(tmp.v4);
+    tmp.v3.subVectors(target, from);
+    if (tmp.v3.lengthSq() < 1e-6) { entry.group.getWorldQuaternion(tmp.q3); tmp.v3.set(0, 0, -1).applyQuaternion(tmp.q3); }
+    tmp.v3.normalize();
     const wantYaw = Math.atan2(-tmp.v3.x, -tmp.v3.z);
     const wantPitch = Math.asin(Math.max(-1, Math.min(1, tmp.v3.y)));
     gameCamera.getWorldQuaternion(tmp.q);
@@ -1899,6 +1965,7 @@
   }
 
   function uiPress(down) {
+    state.lastUiAt = performance.now();
     if (down) {
       const hit = state.uiHit;
       if (!hit) return false;
@@ -2302,6 +2369,8 @@
   function releaseTextFocus() {
     const ae = document.activeElement;
     if (!isTextField(ae) || isOurs(ae) || (ae.closest && ae.closest('#fister-vr-info'))) return;
+    // Dropdowns don't take movement keys, and you may be using a menu over the match (sandbox, settings).
+    if (ae.tagName === 'SELECT' || (state.lastUiAt && performance.now() - state.lastUiAt < 8000)) return;
     try { ae.blur(); } catch {}
     log('Let go of a focused text box (' + describeEl(ae) + ') so movement keys reach the game.');
   }

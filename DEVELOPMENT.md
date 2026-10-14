@@ -106,6 +106,22 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.8.0
+
+- **Real item names**, from the user's 0.7.9 debug report (`dump()` lists the local player's fields):
+  - `javelinMesh`, `bananarangMesh`, `singularityGrenadeMesh`, `stickyBombMesh`, `spellbookMesh`, `dodgeballMesh`
+  - `pistonMesh`, `scytheMesh`, `physicsCannonMesh`, `bearTrapHeldMesh`, `sniperRifleMesh`, `harpoonVisual`, `laserbeamOrb`
+  - Items under an arm, or under another item, are skipped (they already follow). Items are also kept visible by `hideBody`.
+- **Hand aim converges.** The game's aim starts at the body, so the mod steers it through the point where the hand's ray meets the ground, or `aimDistance` (10 m) out.
+  - `aimLaser` draws a thin red line from the aim hand.
+  - Setup page "Aim with" has three options: right hand, left hand (`aimHand: 'left'`), or mouse.
+- **Skinned-mesh render crash** (`applyBoneTransform` / `getX` in `computeBoundingSphere`): on that error, culling is turned off for the offending skinned meshes and the frame is retried.
+- **Text-box release** no longer touches `<select>`s, or anything within 8 s of using the menu panel. It used to fight the sandbox cheat menu.
+- **The game also has its own first-person mode**, which the mod doesn't use yet:
+  - fields `firstPerson*`, `firstPersonHeldMesh*`, `scytheHandLocalPosition`, `spellbookHandLocalPosition`, `scytheGripOffset`
+  - account setting `fister-camera-perspective`
+  - These may give a better grip for items later.
+
 ## v0.7.8 – v0.7.9
 
 - Hands are always mirrored side to side so the claws face outward (the game's model was showing them inside). There's no option for this.

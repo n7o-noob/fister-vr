@@ -131,6 +131,18 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
 
+## v0.9.14: freeze / "Restoring Graphics" when loading into a match
+
+- **Quest report** (0.9.13, FisterQoL build, quick play/main server): stuck at 95%, browser frozen, half-black frozen view, then the game's "Restoring Graphics" (WebGL context lost and restored). The COPY LOG had 71 "repeated frames" and 69+2 uncaught `TypeError: Cannot read properties of undefined (reading 'value')` in the game bundle right after the hand-off. 23 fps.
+- **Likely cause.** The repeat-last-view fallback in `xrFrameBody` re-drew `state.threeScene` whenever the game skipped a frame, with no limit and no try/catch. During map loading the game tears scenes down, so the mod kept re-drawing a disposed scene. It threw inside three.js (uncaught, from the XR callback) and made three re-upload that scene's textures and geometry, piling GPU memory on top of the loading map.
+- **Fixes.**
+  - A repeat only happens if the game drew a real view under 300 ms ago, and at most 20 in a row (`lastRealRenderAt`, `repeatRun`).
+  - Repeats are wrapped in try/catch. On failure: drop `state.threeScene`, block repeats for 2 s, call `renderer.resetState()`, log once.
+  - Otherwise the frame is panel-only (`drawOverlay` alone), so loading UI stays visible.
+  - `webglcontextlost` on any captured renderer's canvas: `state.contextLost`, all extra drawing stops, and if it's the presenting renderer the XR session is ended with a toast ("Press Enter VR again..."). `webglcontextrestored` clears the flag and resets the overlay and clip GL resources.
+  - Frame line in COPY LOG: "repeated frames N (M failed) · panel-only frames K · CONTEXT LOST".
+- Not verified on the Quest. If it still freezes, check the Clips line (clip/page mirror renders) and FisterQoL's uncapped FPS / clip recording as other GPU loads during loading.
+
 ## v0.9.13: menus start menu-only VR; hand-off only into a match
 
 - Quest COPY LOG on 0.9.12 (ENTER VR on the loadout screen): headset black, "Renders/s" all 0, "Menu panel: not built yet", **8 renderers**, "main game view" captured only 75 s after VR started. The flat page showed the loadout's 3D preview (its own renderer) still drawing.

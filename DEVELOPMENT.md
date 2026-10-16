@@ -2,7 +2,7 @@
 
 Context for anyone (human or AI) continuing work on Fister VR. Current version: see `@version` in `src/fister-vr.js`.
 
-## Start here (state as of v0.9.13)
+## Start here (state as of v0.9.15)
 
 - **Working with the user:**
   - They test on a real Quest 2 and send videos, screenshots and **COPY LOG** reports. COPY LOG is the button next to VR INFO; the "Menu panel" and "Aim" lines plus the log are the key diagnostics.
@@ -15,7 +15,7 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
   5. Tell the user to re-copy the bookmarklet once the setup page footer shows the new version.
 - **Tests:** `cd test; NODE_PATH=/opt/node-tools/node_modules PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node runN.cjs`.
   - They need `three.module.js` and `three.core.js` in `test/site/` (gitignored; copy them from an npm `three` build).
-  - The full suite is run6–20 and run23–32. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
+  - The full suite is run6–20 and run23–33. Each prints JSON and `errors []`; run8's "simulated arm crash" is intentional.
   - Don't overwrite existing test numbers; another chat also adds tests. Use the next free number and port.
 - **Reference code:** the user's `fister-community-server.zip` (server + `dist/shared/gameplay`, no client/HUD code) was used for the shoulder-aim origin and the `isEmoting` field. It isn't in the repo; ask the user to re-upload it if needed.
 - **Open / unverified on the real game:**
@@ -130,6 +130,20 @@ Context for anyone (human or AI) continuing work on Fister VR. Current version: 
 - Arms and body: armMode 'hand', swapArms true, handOffset {forward 0.15, inward 0.06, up 0}, hideBody true, eyeOffset.up 0.1.
 - Menu: mode 'body', distance 1.4, width 1.6, drop 0.15, tiltDeg 8, followDeg 35, maxFps 12, resolution 1280.
 - Aim and other: aimMode 'hand', armScale 1, boxScale 1, hideOutlines 'world', spoofPointerLock true.
+
+## v0.9.15: FisterQoL 2.0
+
+- The FisterQoL bundled in the "Fister VR + FisterQoL" bookmark (and `dist/FisterQoL.user.js`) is now **2.0**, up from 1.6.5.
+- FisterQoL releases no longer contain VR. The VR integration is ported onto each plain release with **`tools/port-qol.cjs`** (anchors must match exactly once, or it stops):
+  - runtime: the `fisterVrQol` module and `FisterVrPanel` (QoL > VR), the `['vr','VR']` category, `fisterVrQol.uncapped()` in the frame pacer's `shouldRender` / `getUncappedIntervalMs`, and clips (`recordingCanvas(..., recorder)`, `vrImage = fisterVrQol.clipFrame()`, `capture()` draws `vrImage` and maps overlays with `fisterVrQol.clipRect()`);
+  - loader: the document-start `injectVr` block with the `__FISTER_VR_SOURCE__` slot, the recorder argument at both clip patch sites, and `fisterVrQol.start()` in boot.
+  - Next release: `node tools/port-qol.cjs qol/FisterQoL.user.template.js <new FisterQoL.user.js> qol/FisterQoL.user.template.js`. Running it on the same release reproduces the template byte for byte.
+- Changes since 1.6.5 that matter here:
+  - From 1.7.5, game hooks are optional: if an update breaks one, only that feature turns off. The clip hooks are optional too, so VR clips can switch off on their own after a game update.
+  - 1.7.5 no longer exposes the game's key bindings (`__fisterNative.BR`/`CE`), so the automatic Save clip key search finds nothing; a key chosen in QoL > VR still works (all reads are in try/catch).
+  - Vertical clips follow the game's `verticalFill` setting.
+- 2.0's browser userscript is 1.7.5's with only the version changed; 2.0 adds Steam (Windows) and native Linux installers, which this repo does not use.
+- Not verified in the real game: QoL 2.0 hooking the live client, and the VR tab inside it.
 
 ## v0.9.14: freeze / "Restoring Graphics" when loading into a match
 
